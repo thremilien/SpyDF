@@ -1,31 +1,112 @@
 <!doctype html>
 <html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PDF Redact</title>
+<link rel="icon" type="image/svg+xml" href="/static/logo.svg">
 <link rel="stylesheet" href="/static/style.css">
 </head><body>
 
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <filter id="mosaic" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="7" result="noise"/>
+      <feColorMatrix in="noise" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.5 0" result="grain"/>
+      <feComposite in="grain" in2="SourceGraphic" operator="in" result="grainClip"/>
+      <feMerge>
+        <feMergeNode in="SourceGraphic"/>
+        <feMergeNode in="grainClip"/>
+      </feMerge>
+    </filter>
+  </defs>
+</svg>
+
 <header>
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 24 24" fill="none"><rect x="4" y="2.5" width="16" height="19" rx="1.5" stroke="currentColor" stroke-width="1.4"/><rect x="7.5" y="12.5" width="9" height="4.5" rx="0.5" fill="currentColor"/><line x1="7.5" y1="6.5" x2="14.5" y2="6.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><line x1="7.5" y1="9.3" x2="16.5" y2="9.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+    <span class="brand-name">PDF&nbsp;Redact</span>
+  </div>
+
   <input type="file" id="file" accept="application/pdf" hidden>
-  <button onclick="file.click()">Ouvrir un PDF</button>
+  <button id="openBtn" class="btn" onclick="file.click()">
+    <svg viewBox="0 0 18 18" fill="none"><path d="M3 12.5V14a1 1 0 001 1h10a1 1 0 001-1v-1.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M9 2.5v8M9 2.5L6 5.7M9 2.5l3 3.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    Ouvrir un PDF
+  </button>
+
   <div class="sep"></div>
-  <button id="prev" disabled>&lsaquo;</button>
-  <span id="pnum">- / -</span>
-  <button id="next" disabled>&rsaquo;</button>
+
+  <div class="btn-group" role="group" aria-label="Outil de zone">
+    <button id="tool-rect" class="btn tool-btn active" data-tool="rect" title="Rectangle">
+      <svg viewBox="0 0 18 18" fill="none"><rect x="3" y="5" width="12" height="8" rx="1" stroke="currentColor" stroke-width="1.5"/></svg>
+      Rectangle
+    </button>
+    <button id="tool-polygon" class="btn tool-btn" data-tool="polygon" title="Polygone : cliquer les sommets, double-clic pour fermer">
+      <svg viewBox="0 0 18 18" fill="none"><path d="M9 3l6 4-2 7H5L3 7z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+      Polygone
+    </button>
+    <button id="tool-freehand" class="btn tool-btn" data-tool="freehand" title="Main levée : dessiner au clic-glissé">
+      <svg viewBox="0 0 18 18" fill="none"><path d="M2.5 12.5c1.5-4 3-6.5 4.5-6.5s1 4 2.5 4 2-5 3.5-5 1.5 3.5 3 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Main levée
+    </button>
+  </div>
+
+  <div class="btn-group" role="group" aria-label="Mode de la nouvelle zone">
+    <button id="mode-delete" class="btn mode-btn active" data-mode="delete" title="Le contenu est effacé du PDF">
+      <span class="dot dot-delete"></span>Supprimer
+    </button>
+    <button id="mode-pixelate" class="btn mode-btn" data-mode="pixelate" title="Le contenu est remplacé par une mosaïque illisible">
+      <span class="dot dot-pixelate"></span>Repixeliser
+    </button>
+  </div>
+
   <div class="sep"></div>
-  <button id="undo" disabled>Annuler</button>
-  <button id="clear" disabled>Vider la page</button>
-  <div class="sep"></div>
-  <label><input type="checkbox" id="pixelate" checked> repixeliser l'image dessous</label>
-  <label><input type="checkbox" id="meta" checked> vider les metadonnees</label>
+
+  <button id="undo" class="btn icon-only" disabled title="Annuler (Ctrl+Z)">
+    <svg viewBox="0 0 18 18" fill="none"><path d="M4 8h7a3.5 3.5 0 010 7H8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M6.5 5L4 8l2.5 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+  <button id="clear" class="btn icon-only" disabled title="Vider la page active">
+    <svg viewBox="0 0 18 18" fill="none"><path d="M4 5.5h10M7.5 5.5V4a1 1 0 011-1h1a1 1 0 011 1v1.5M5.5 5.5l.6 8a1 1 0 001 .9h3.8a1 1 0 001-.9l.6-8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+
+  <span id="pnum" class="pnum">— / —</span>
+
   <div class="grow"></div>
-  <button id="export" class="primary" disabled>Exporter</button>
+
+  <label class="check"><input type="checkbox" id="meta" checked><span>Vider les métadonnées</span></label>
+  <button id="export" class="btn primary" disabled>
+    Exporter
+    <svg viewBox="0 0 18 18" fill="none"><path d="M9 2.5v8M9 10.5l-3-3.2M9 10.5l3-3.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.5 12.5V14a1 1 0 001 1h9a1 1 0 001-1v-1.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
 </header>
 
 <div id="stage">
-  <div id="drop">Ouvrez un PDF, puis glissez la souris pour marquer les zones a supprimer.</div>
-  <div id="wrap" hidden><img id="pageimg"><div id="layer"></div></div>
+  <div id="drop">
+    <svg viewBox="0 0 48 48" fill="none"><rect x="10" y="5" width="28" height="38" rx="3" stroke="currentColor" stroke-width="1.6"/><rect x="15" y="24" width="18" height="9" rx="1" fill="currentColor" opacity=".9"/><line x1="15" y1="13" x2="29" y2="13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><line x1="15" y1="18" x2="33" y2="18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    <h1>Déposez un examen à anonymiser</h1>
+    <p>Glissez un PDF ici, ou ouvrez-en un depuis la barre du haut.</p>
+  </div>
+  <div id="pages" hidden></div>
 </div>
 <div id="status">Aucun document.</div>
+
+<div class="help-wrap">
+  <button id="helpBtn" type="button" aria-label="Aide">?</button>
+  <div id="helpPop" hidden>
+    <ul>
+      <li>Ouvrez un PDF, ou glissez-le dans la page.</li>
+      <li>Choisissez une forme et dessinez sur la page. Le polygone se ferme au <b>double-clic</b>.</li>
+      <li>Glissez une zone pour la déplacer, ses poignées pour la redimensionner.</li>
+      <li><b>Clic droit</b> sur une zone : changer son mode ou la supprimer. <b>Ctrl+Z</b> annule tout.</li>
+      <li><b>Supprimer</b> efface le contenu ; <b>Repixeliser</b> n'en laisse qu'une mosaïque illisible.</li>
+    </ul>
+  </div>
+</div>
+
+<div id="zoneMenu" hidden>
+  <button id="zoneModeDelete" class="zm-item"><span class="dot dot-delete"></span>Supprimer</button>
+  <button id="zoneModePixelate" class="zm-item"><span class="dot dot-pixelate"></span>Repixeliser</button>
+  <div class="zm-sep"></div>
+  <button id="zoneDelete" class="zm-item danger">Supprimer cette zone</button>
+</div>
 
 <script src="/static/app.js"></script>
 </body></html>

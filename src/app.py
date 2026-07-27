@@ -14,6 +14,7 @@ PACKAGE_DIR = Path(__file__).parent
 RENDER_ZOOM = 4.0  # zoom de repli si le client ne demande pas de largeur
 MIN_ZOOM = 1.5
 MAX_ZOOM = 8.0     # garde-fou memoire: 8x sur A4 = ~128 Mpx
+MOSAIC_BLOCKS = 14  # largeur en "gros pixels" d'une zone repixelisee
 
 # sur certains systemes .js est devine comme application/javascript, qui ne
 # recoit pas de charset: les accents du JS arrivent alors casses dans l'UI.
@@ -67,6 +68,18 @@ def api_page(sid: str, n: int, w: int = 0):
                     headers={"Cache-Control": "no-store"})
 
 
+def _mosaic_pixmap(page, rect):
+    """Rend la zone en tout petit: en la reposant a sa taille d'origine on
+    obtient une mosaique illisible du contenu initial."""
+    w, h = max(rect.width, 1.0), max(rect.height, 1.0)
+    s = MOSAIC_BLOCKS / max(w, h)
+    try:
+        pm = page.get_pixmap(matrix=fitz.Matrix(s, s), clip=rect, alpha=False)
+    except Exception:
+        return None
+    return pm if pm.width and pm.height else None
+
+
 @app.post("/api/export")
 async def api_export(payload: dict):
     sid = payload.get("sid")
@@ -74,22 +87,91 @@ async def api_export(payload: dict):
     if not entry:
         raise HTTPException(404, "session inconnue")
 
-    # {"3": [[x0,y0,x1,y1], ...]} en coordonnees PDF
-    raw = payload.get("rects") or {}
-    rects = {int(k): [fitz.Rect(*r) for r in v] for k, v in raw.items() if v}
-    if not rects:
-        raise HTTPException(400, "aucune zone selectionnee")
+    # {"3": [{"points": [[x,y], ...], "mode": "delete"|"pixelate"}, ...]} en coordonnees PDF.
+    # "points" est le contour de la zone (rectangle = 4 coins, mais aussi
+    # polygone ou trace libre) ; la suppression de texte se fait sur le
+    # rectangle englobant, le cache visuel blanc suit le contour exact.
+    raw = payload.get("zones") or {}
+    zones_by_page: dict[int, list[dict]] = {}
+    for k, v in raw.items():
+        if not v:
+            continue
+        parsed = []
+        for z in v:
+            pts = z.get("points") or []
+            if len(pts) < 2:
+                continue
+            points = [fitz.Point(x, y) for x, y in pts]
+            rect = fitz.Rect(points[0], points[0])
+            for p in points:
+                rect.include_point(p)
+            parsed.append({
+                "points": points,
+                "rect": rect,
+                "mode": "pixelate" if z.get("mode") == "pixelate" else "delete",
+            })
+        if parsed:
+            zones_by_page[int(k)] = parsed
 
-    pixelate = bool(payload.get("pixelate", True))
+    deleted_pages = {int(p) for p in (payload.get("deleted_pages") or [])}
+    # pas besoin de rediger une page qui va disparaitre entierement
+    zones_by_page = {p: zs for p, zs in zones_by_page.items() if p not in deleted_pages}
+
+    if not zones_by_page and not deleted_pages:
+        raise HTTPException(400, "aucune zone ni page supprimee")
+
     strip_meta = bool(payload.get("strip_meta", True))
-    mode = fitz.PDF_REDACT_IMAGE_PIXELS if pixelate else fitz.PDF_REDACT_IMAGE_NONE
 
     doc = fitz.open(stream=entry["bytes"], filetype="pdf")
-    for pno, rs in rects.items():
+
+    if len(deleted_pages) >= doc.page_count:
+        doc.close()
+        raise HTTPException(400, "impossible de supprimer toutes les pages")
+
+    for pno, zs in zones_by_page.items():
         page = doc[pno]
-        for r in rs:
-            page.add_redact_annot(r, fill=(1, 1, 1))
-        page.apply_redactions(images=mode)
+        delete_zs = [z for z in zs if z["mode"] == "delete"]
+        pixel_zs = [z for z in zs if z["mode"] == "pixelate"]
+
+        # 1. pour les zones "repixeliser", on capture d'abord une version
+        # fortement sous-echantillonnee du contenu d'origine (illisible), avant
+        # toute redaction. C'est cette mosaique qui sera reposee ensuite.
+        mosaics = []
+        for z in pixel_zs:
+            pm = _mosaic_pixmap(page, z["rect"])
+            if pm:
+                mosaics.append((z["rect"], pm))
+
+        # 2. redaction reelle de TOUTES les zones: le texte est supprime et les
+        # pixels des images couvertes sont detruits (pas seulement masques).
+        for z in zs:
+            page.add_redact_annot(z["rect"])
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS)
+
+        # 3. zones "supprimer": cache blanc suivant le contour exact.
+        if delete_zs:
+            shape = page.new_shape()
+            for z in delete_zs:
+                shape.draw_polyline(z["points"])
+                shape.finish(fill=(1, 1, 1), color=(1, 1, 1), closePath=True)
+            shape.commit()
+
+        # 4. zones "repixeliser": on repose la mosaique par-dessus le vide.
+        for rect, pm in mosaics:
+            page.insert_image(rect, pixmap=pm)
+
+    # verification: reste-t-il du texte dans les zones ? (avant suppression de
+    # pages, pour que les numeros de page correspondent encore a zones_by_page)
+    leaks = []
+    for pno, zs in zones_by_page.items():
+        page_rects = [z["rect"] for z in zs]
+        for w in doc[pno].get_text("words"):
+            wr = fitz.Rect(w[:4])
+            if any(wr.intersects(r) for r in page_rects):
+                leaks.append({"page": pno + 1, "text": w[4]})
+
+    if deleted_pages:
+        doc.delete_pages(sorted(deleted_pages))
 
     if strip_meta:
         doc.set_metadata({})
@@ -100,16 +182,6 @@ async def api_export(payload: dict):
 
     out = doc.tobytes(garbage=4, deflate=True, clean=True)
     doc.close()
-
-    # verification: reste-t-il du texte dans les zones ?
-    leaks = []
-    chk = fitz.open(stream=out, filetype="pdf")
-    for pno, rs in rects.items():
-        for w in chk[pno].get_text("words"):
-            wr = fitz.Rect(w[:4])
-            if any(wr.intersects(r) for r in rs):
-                leaks.append({"page": pno + 1, "text": w[4]})
-    chk.close()
 
     base = os.path.splitext(entry["name"])[0]
     key = uuid.uuid4().hex

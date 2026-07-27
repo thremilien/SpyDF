@@ -579,8 +579,16 @@ $('export').onclick = async () => {
   const d = await r.json();
   const a = document.createElement('a'); a.href = d.download; a.download = d.filename;
   document.body.appendChild(a); a.click(); a.remove();
-  $('status').innerHTML = d.leak_count
-    ? `<span class="warn">Attention : ${d.leak_count} fragment(s) de texte touchent encore les zones (`
-      + d.leaks.map(l => `p${l.page} : ${l.text}`).join(', ') + `). Vérifiez le résultat.</span>`
-    : `<span class="ok">Export terminé, aucun texte résiduel détecté dans les zones.</span>`;
+  // le contenu des fuites vient du PDF: jamais d'innerHTML avec ça.
+  const span = document.createElement('span');
+  if (d.leak_count) {
+    span.className = 'warn';
+    const detail = d.leaks.map(l => `p${l.page} ${l.kind} « ${l.text} »`).join(', ');
+    span.textContent = `Attention : ${d.leak_count} élément(s) subsistent dans les zones (${detail}). Vérifiez le résultat.`;
+  } else {
+    span.className = 'ok';
+    span.textContent = 'Export terminé, aucun résidu détecté dans les zones.';
+  }
+  $('status').textContent = '';
+  $('status').appendChild(span);
 };

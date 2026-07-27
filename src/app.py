@@ -119,6 +119,33 @@ def _scrub_document(doc):
             pass
 
 
+def _verify(out: bytes, zones_by_page, page_map):
+    """Relecture du PDF reellement produit (et non du document en memoire):
+    reste-t-il du texte, une annotation ou un champ dans les zones ?"""
+    leaks = []
+    chk = fitz.open(stream=out, filetype="pdf")
+    try:
+        for pno, zs in zones_by_page.items():
+            new_no = page_map.get(pno)
+            if new_no is None or not 0 <= new_no < chk.page_count:
+                continue
+            page, rects = chk[new_no], [z["rect"] for z in zs]
+            for w in page.get_text("words"):
+                if any(fitz.Rect(w[:4]).intersects(r) for r in rects):
+                    leaks.append({"page": new_no + 1, "kind": "texte", "text": w[4]})
+            for a in page.annots():
+                if any(a.rect.intersects(r) for r in rects):
+                    leaks.append({"page": new_no + 1, "kind": "annotation",
+                                  "text": a.info.get("title") or a.type[1]})
+            for w in page.widgets():
+                if any(w.rect.intersects(r) for r in rects):
+                    leaks.append({"page": new_no + 1, "kind": "champ",
+                                  "text": w.field_name or "?"})
+    finally:
+        chk.close()
+    return leaks
+
+
 @app.post("/api/export")
 async def api_export(payload: dict):
     sid = payload.get("sid")
@@ -207,15 +234,9 @@ async def api_export(payload: dict):
         for rect, pm in mosaics:
             page.insert_image(rect, pixmap=pm)
 
-    # verification: reste-t-il du texte dans les zones ? (avant suppression de
-    # pages, pour que les numeros de page correspondent encore a zones_by_page)
-    leaks = []
-    for pno, zs in zones_by_page.items():
-        page_rects = [z["rect"] for z in zs]
-        for w in doc[pno].get_text("words"):
-            wr = fitz.Rect(w[:4])
-            if any(wr.intersects(r) for r in page_rects):
-                leaks.append({"page": pno + 1, "text": w[4]})
+    # numero de page d'origine -> numero dans le document exporte
+    page_map = {p: p - sum(1 for d in deleted_pages if d < p)
+                for p in zones_by_page}
 
     if deleted_pages:
         doc.delete_pages(sorted(deleted_pages))
@@ -228,6 +249,8 @@ async def api_export(payload: dict):
     # dereferences comme le ferait une sauvegarde incrementale.
     out = doc.tobytes(garbage=4, deflate=True, clean=True)
     doc.close()
+
+    leaks = _verify(out, zones_by_page, page_map)
 
     base = os.path.splitext(entry["name"])[0]
     key = uuid.uuid4().hex

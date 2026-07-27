@@ -2,6 +2,9 @@
 
 import mimetypes
 import os
+import re
+import time
+import unicodedata
 import uuid
 from pathlib import Path
 
@@ -16,6 +19,10 @@ MIN_ZOOM = 1.5
 MAX_ZOOM = 8.0     # garde-fou memoire: 8x sur A4 = ~128 Mpx
 MOSAIC_BLOCKS = 14  # largeur en "gros pixels" d'une zone repixelisee
 
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+SESSION_TTL = 2 * 3600   # un document oublie ne doit pas rester en RAM
+MAX_SESSIONS = 32
+
 # sur certains systemes .js est devine comme application/javascript, qui ne
 # recoit pas de charset: les accents du JS arrivent alors casses dans l'UI.
 mimetypes.add_type("text/javascript", ".js")
@@ -24,23 +31,67 @@ mimetypes.add_type("text/css", ".css")
 app = FastAPI()
 app.mount("/static", StaticFiles(directory=PACKAGE_DIR / "static"), name="static")
 
-DOCS: dict[str, dict] = {}  # sid -> {"bytes": ..., "name": ...}
+DOCS: dict[str, dict] = {}  # sid -> {"bytes": ..., "name": ..., "ts": ...}
+
+
+def _sweep():
+    """Rien n'est persiste, mais un PDF garde en RAM tout ce qu'on vient d'en
+    retirer: on ne laisse pas trainer les sessions oubliees."""
+    now = time.time()
+    for k in [k for k, v in DOCS.items() if now - v["ts"] > SESSION_TTL]:
+        DOCS.pop(k, None)
+    while len(DOCS) > MAX_SESSIONS:
+        DOCS.pop(min(DOCS, key=lambda k: DOCS[k]["ts"]), None)
+
+
+def _put(name: str, data: bytes) -> str:
+    _sweep()
+    key = uuid.uuid4().hex
+    DOCS[key] = {"bytes": data, "name": name, "ts": time.time()}
+    return key
+
+
+def _get(key: str) -> dict:
+    _sweep()
+    entry = DOCS.get(key)
+    if not entry:
+        raise HTTPException(404, "session inconnue ou expiree")
+    return entry
+
+
+def _safe_filename(name: str) -> str:
+    """Le nom vient du fichier depose: il ne doit ni casser l'en-tete
+    Content-Disposition ni ramener un chemin."""
+    name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    name = re.sub(r"[^A-Za-z0-9._ -]", "_", os.path.basename(name)).strip(" .")
+    return name[:100] or "document.pdf"
 
 
 @app.post("/api/open")
 async def api_open(file: UploadFile = File(...)):
     data = await file.read()
+    if not data:
+        raise HTTPException(400, "fichier vide")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "fichier trop volumineux (200 Mo maximum)")
     try:
         doc = fitz.open(stream=data, filetype="pdf")
+        # un PDF chiffre s'ouvre, mais ses pages sont illisibles: sans mot de
+        # passe on ne pourrait ni rendre ni rediger quoi que ce soit.
+        if doc.needs_pass:
+            doc.close()
+            raise HTTPException(400, "PDF protege par mot de passe")
         pages = [{"w": p.rect.width, "h": p.rect.height,
                   "x0": p.rect.x0, "y0": p.rect.y0} for p in doc]
         doc.close()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(400, f"PDF illisible: {e}")
 
-    sid = uuid.uuid4().hex
-    DOCS[sid] = {"bytes": data, "name": file.filename or "document.pdf"}
-    return {"sid": sid, "name": DOCS[sid]["name"], "pages": pages}
+    name = _safe_filename(file.filename or "document.pdf")
+    sid = _put(name, data)
+    return {"sid": sid, "name": name, "pages": pages}
 
 
 @app.get("/api/page/{sid}/{n}")
@@ -49,9 +100,7 @@ def api_page(sid: str, n: int, w: int = 0):
     Un PDF est vectoriel: il n'y a pas de "qualite native", on choisit une
     resolution. On rend donc exactement ce que l'ecran affiche, plutot qu'un
     zoom fixe qui serait soit flou, soit du gaspillage."""
-    entry = DOCS.get(sid)
-    if not entry:
-        raise HTTPException(404, "session inconnue")
+    entry = _get(sid)
     doc = fitz.open(stream=entry["bytes"], filetype="pdf")
     if not 0 <= n < len(doc):
         doc.close()
@@ -148,10 +197,7 @@ def _verify(out: bytes, zones_by_page, page_map):
 
 @app.post("/api/export")
 async def api_export(payload: dict):
-    sid = payload.get("sid")
-    entry = DOCS.get(sid)
-    if not entry:
-        raise HTTPException(404, "session inconnue")
+    entry = _get(payload.get("sid") or "")
 
     # {"3": [{"points": [[x,y], ...], "mode": "delete"|"pixelate"}, ...]} en coordonnees PDF.
     # "points" est le contour de la zone (rectangle = 4 coins, mais aussi
@@ -252,9 +298,8 @@ async def api_export(payload: dict):
 
     leaks = _verify(out, zones_by_page, page_map)
 
-    base = os.path.splitext(entry["name"])[0]
-    key = uuid.uuid4().hex
-    DOCS[key] = {"bytes": out, "name": f"{base}_redacted.pdf"}
+    base = os.path.splitext(entry["name"])[0] or "document"
+    key = _put(f"{base}_redacted.pdf", out)
     return JSONResponse({
         "download": f"/api/download/{key}",
         "filename": f"{base}_redacted.pdf",
@@ -265,13 +310,15 @@ async def api_export(payload: dict):
 
 @app.get("/api/download/{key}")
 def api_download(key: str):
-    entry = DOCS.get(key)
-    if not entry:
-        raise HTTPException(404, "expire")
+    entry = _get(key)
     return Response(
         entry["bytes"],
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{entry["name"]}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{entry["name"]}"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

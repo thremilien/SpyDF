@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8">
+<title>PDF Redact</title>
+<link rel="stylesheet" href="/static/style.css">
+</head><body>
+
+<header>
+  <input type="file" id="file" accept="application/pdf" hidden>
+  <button onclick="file.click()">Ouvrir un PDF</button>
+  <div class="sep"></div>
+  <button id="prev" disabled>&lsaquo;</button>
+  <span id="pnum">- / -</span>
+  <button id="next" disabled>&rsaquo;</button>
+  <div class="sep"></div>
+  <button id="undo" disabled>Annuler</button>
+  <button id="clear" disabled>Vider la page</button>
+  <div class="sep"></div>
+  <label><input type="checkbox" id="pixelate" checked> repixeliser l'image dessous</label>
+  <label><input type="checkbox" id="meta" checked> vider les metadonnees</label>
+  <div class="grow"></div>
+  <button id="export" class="primary" disabled>Exporter</button>
+</header>
+
+<div id="stage">
+  <div id="drop">Ouvrez un PDF, puis glissez la souris pour marquer les zones a supprimer.</div>
+  <div id="wrap" hidden><img id="pageimg"><div id="layer"></div></div>
+</div>
+<div id="status">Aucun document.</div>
+
+<script src="/static/app.js"></script>
+</body></html>

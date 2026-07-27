@@ -80,6 +80,45 @@ def _mosaic_pixmap(page, rect):
     return pm if pm.width and pm.height else None
 
 
+def _purge_annots(page, rects):
+    """apply_redactions ne touche ni aux annotations ni aux champs de
+    formulaire: une note de correction garde le nom de son auteur et un champ
+    garde sa valeur, meme entierement recouverts par une zone. On les supprime
+    donc explicitement des qu'ils touchent une zone."""
+    for a in list(page.annots()):
+        if a.type[0] == fitz.PDF_ANNOT_REDACT:
+            continue
+        if any(a.rect.intersects(r) for r in rects):
+            page.delete_annot(a)
+    for w in list(page.widgets()):
+        if any(w.rect.intersects(r) for r in rects):
+            page.delete_widget(w)
+
+
+def _rename_layers(doc):
+    """Le nom d'un calque ("Copie de Jean Dupont") survit dans /OCProperties
+    meme quand son contenu a ete redige."""
+    for i, xref in enumerate(doc.get_ocgs() or {}, 1):
+        doc.xref_set_key(xref, "Name", fitz.get_pdf_str(f"calque {i}"))
+
+
+def _scrub_document(doc):
+    """Traces d'identite qui ne vivent pas dans le contenu des pages et que la
+    redaction laisse donc intactes: metadonnees, XMP, signets (souvent le nom
+    de l'eleve), pieces jointes, JavaScript, liens, reponses de formulaire."""
+    doc.set_metadata({})
+    for step in (
+        lambda: doc.del_xml_metadata(),
+        lambda: doc.set_toc([]),
+        lambda: _rename_layers(doc),
+        lambda: doc.scrub(redactions=False, clean_pages=False),
+    ):
+        try:
+            step()
+        except Exception:
+            pass
+
+
 @app.post("/api/export")
 async def api_export(payload: dict):
     sid = payload.get("sid")
@@ -148,8 +187,10 @@ async def api_export(payload: dict):
         # LINE_ART_REMOVE_IF_TOUCHED est indispensable: par defaut PyMuPDF ne
         # retire qu'un trace *entierement* contenu dans la zone, si bien qu'une
         # signature qui deborde survivait intacte sous le cache blanc.
-        for z in zs:
-            page.add_redact_annot(z["rect"])
+        rects = [z["rect"] for z in zs]
+        _purge_annots(page, rects)
+        for r in rects:
+            page.add_redact_annot(r)
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS,
                               graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED,
                               text=fitz.PDF_REDACT_TEXT_REMOVE)
@@ -180,12 +221,11 @@ async def api_export(payload: dict):
         doc.delete_pages(sorted(deleted_pages))
 
     if strip_meta:
-        doc.set_metadata({})
-        try:
-            doc.del_xml_metadata()
-        except Exception:
-            pass
+        _scrub_document(doc)
 
+    # garbage=4 + clean: les objets devenus orphelins (anciennes images, flux de
+    # contenu remplaces) sont reellement retires du fichier, pas seulement
+    # dereferences comme le ferait une sauvegarde incrementale.
     out = doc.tobytes(garbage=4, deflate=True, clean=True)
     doc.close()
 

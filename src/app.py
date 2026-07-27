@@ -142,11 +142,17 @@ async def api_export(payload: dict):
             if pm:
                 mosaics.append((z["rect"], pm))
 
-        # 2. redaction reelle de TOUTES les zones: le texte est supprime et les
-        # pixels des images couvertes sont detruits (pas seulement masques).
+        # 2. redaction reelle de TOUTES les zones: le texte est supprime, les
+        # pixels des images couvertes sont detruits (pas seulement masques) et
+        # les traces vectorielles qui touchent une zone sont retirees.
+        # LINE_ART_REMOVE_IF_TOUCHED est indispensable: par defaut PyMuPDF ne
+        # retire qu'un trace *entierement* contenu dans la zone, si bien qu'une
+        # signature qui deborde survivait intacte sous le cache blanc.
         for z in zs:
             page.add_redact_annot(z["rect"])
-        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS)
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS,
+                              graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED,
+                              text=fitz.PDF_REDACT_TEXT_REMOVE)
 
         # 3. zones "supprimer": cache blanc suivant le contour exact.
         if delete_zs:

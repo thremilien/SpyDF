@@ -1,5 +1,6 @@
 """FastAPI app: routes for opening, rendering, redacting and downloading PDFs."""
 
+import mimetypes
 import os
 import uuid
 from pathlib import Path
@@ -10,7 +11,14 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 PACKAGE_DIR = Path(__file__).parent
-RENDER_ZOOM = 2.0  # qualite du rendu, independant de l'affichage
+RENDER_ZOOM = 4.0  # zoom de repli si le client ne demande pas de largeur
+MIN_ZOOM = 1.5
+MAX_ZOOM = 8.0     # garde-fou memoire: 8x sur A4 = ~128 Mpx
+
+# sur certains systemes .js est devine comme application/javascript, qui ne
+# recoit pas de charset: les accents du JS arrivent alors casses dans l'UI.
+mimetypes.add_type("text/javascript", ".js")
+mimetypes.add_type("text/css", ".css")
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory=PACKAGE_DIR / "static"), name="static")
@@ -35,14 +43,24 @@ async def api_open(file: UploadFile = File(...)):
 
 
 @app.get("/api/page/{sid}/{n}")
-def api_page(sid: str, n: int):
+def api_page(sid: str, n: int, w: int = 0):
+    """`w` = largeur voulue en pixels ecran reels (CSS x devicePixelRatio).
+    Un PDF est vectoriel: il n'y a pas de "qualite native", on choisit une
+    resolution. On rend donc exactement ce que l'ecran affiche, plutot qu'un
+    zoom fixe qui serait soit flou, soit du gaspillage."""
     entry = DOCS.get(sid)
     if not entry:
         raise HTTPException(404, "session inconnue")
     doc = fitz.open(stream=entry["bytes"], filetype="pdf")
     if not 0 <= n < len(doc):
+        doc.close()
         raise HTTPException(404, "page hors limites")
-    pm = doc[n].get_pixmap(matrix=fitz.Matrix(RENDER_ZOOM, RENDER_ZOOM), alpha=False)
+    page = doc[n]
+    if w > 0 and page.rect.width:
+        zoom = min(max(w / page.rect.width, MIN_ZOOM), MAX_ZOOM)
+    else:
+        zoom = RENDER_ZOOM
+    pm = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
     png = pm.tobytes("png")
     doc.close()
     return Response(png, media_type="image/png",

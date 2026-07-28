@@ -25,7 +25,7 @@ It is also in most package managers — `brew install uv`, `pipx install uv`,
 `PATH`, then:
 
 ```bash
-git clone <this repo> && cd ExamAnonymizer
+git clone <this repo> && cd spydf
 uv sync
 ```
 

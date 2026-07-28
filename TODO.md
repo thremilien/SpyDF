@@ -6,6 +6,25 @@ what is still open.
 
 ## Open
 
+- [ ] **Polygon zones redact the wrong area.** Deleting everything in the
+      bounding box is not the intended behaviour: only what is *inside the
+      drawn shape* should be removed. Over-deleting text is acceptable if the
+      implementation needs it — what is not acceptable is covering the whole
+      bounding box in white, since the visible result must follow the outline.
+      (The white cover already follows the exact outline today; it is the
+      *deletion* that runs on the bounding box, and the dashed rectangle now
+      drawn around the zone is what makes that visible.)
+
+      PyMuPDF can only redact rectangles, so following the shape means
+      decomposing it into horizontal strips and redacting each one — more
+      code, slower exports, and still slightly over-deleting at strip edges.
+
+      Counterpoint, from the same discussion: **the polygon tool has strictly
+      no interest.** If that holds, the cheaper resolution is to drop the
+      polygon tool rather than build strip decomposition for it. Freehand has
+      the same bounding-box behaviour and would need the same decision.
+      To settle with the user before touching either.
+
 - [ ] **Scroll synchronisation between the two panes needs a decision.**
       Today it is one-way and coarse: when the page you are reading on the
       left changes, the right pane scrolls to that page's sheet. Two problems

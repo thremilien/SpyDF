@@ -208,17 +208,6 @@ header {
 .zone-ghost-fill { fill: var(--ink); fill-opacity: .06; }
 .zone-ghost-hull { stroke: var(--ink-faint); stroke-width: 1.1; stroke-dasharray: 3 4; }
 
-/* Rectangle englobant d'une zone non rectangulaire: c'est lui, et non le
-   contour dessiné, qui est effacé du PDF. On le montre pour que l'étendue
-   réelle de la suppression soit visible. */
-.zone-bbox {
-  fill: none; stroke-width: 1.2; stroke-dasharray: 4 4;
-  vector-effect: non-scaling-stroke; pointer-events: none; opacity: .75;
-}
-.zone-bbox-delete { stroke: var(--accent); }
-.zone-bbox-pixelate { stroke: var(--teal); }
-.zone-bbox.selected { stroke-width: 1.8; opacity: 1; }
-
 /* ---------- inspecteur: la feuille blanche de droite ---------- */
 #inspector {
   position: relative;   /* offsetTop des feuilles = position dans ce panneau */

@@ -11,7 +11,7 @@ import fitz
 import pytest
 from fastapi.testclient import TestClient
 
-from src.app import _verify, app
+from src.app import _shape_mask, _verify, app
 
 # Zone dessinee par l'utilisateur, en coordonnees PDF.
 ZONE = (50, 80, 260, 175)
@@ -186,24 +186,95 @@ def test_pixelate_destroys_the_source_text(client):
     assert body["leak_count"] == 0, body["leaks"]
 
 
-def test_non_rectangular_zone_clears_its_bounding_box(client):
-    """Comportement assume et signale dans l'interface: un polygone rédige son
-    rectangle englobant, jamais moins."""
+# triangle large en haut, pointe en bas: son rectangle englobant deborde
+# largement de part et d'autre, aux hauteurs ou l'on ecrit.
+TRIANGLE = [[60, 60], [400, 60], [230, 140]]
+
+
+def test_non_rectangular_zone_follows_its_outline(client):
+    """Ce qui disparait suit le trace, pas son rectangle englobant: un mot pose
+    dans le rectangle mais hors du contour survit."""
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
-    page.insert_text((72, 100), "INSIDETRIANGLE", fontsize=12)
-    page.insert_text((300, 100), "INSIDEBBOXONLY", fontsize=12)
+    page.insert_text((175, 100), "INSIDETRIANGLE", fontsize=12)
+    page.insert_text((62, 100), "OUTSIDE", fontsize=12)
     data = doc.tobytes()
     doc.close()
 
     sid = open_doc(client, data)
-    triangle = [[60, 80], [200, 80], [400, 110]]   # bbox = 60,80 -> 400,110
-    zones = {"0": [{"type": "polygon", "points": triangle, "mode": "delete"}]}
-    _, out = export(client, sid, zones)
+    zones = {"0": [{"type": "polygon", "points": TRIANGLE, "mode": "delete"}]}
+    body, out = export(client, sid, zones)
 
     haystack = every_byte(out)
     assert b"INSIDETRIANGLE" not in haystack
-    assert b"INSIDEBBOXONLY" not in haystack
+    assert b"OUTSIDE" in haystack
+    assert body["leak_count"] == 0, body["leaks"]
+
+
+def test_polygon_on_a_scan_does_not_whiten_its_bounding_box(client):
+    """Le cas qui rendait le rectangle englobant inacceptable: quand la page est
+    une image, rediger le rectangle en detruit tous les pixels et le blanchit
+    entierement, sous un cache qui, lui, suivait le contour."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    grey = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 300, 400), False)
+    grey.clear_with(90)
+    page.insert_image(page.rect, pixmap=grey)
+    data = doc.tobytes()
+    doc.close()
+
+    sid = open_doc(client, data)
+    zones = {"0": [{"type": "polygon", "points": TRIANGLE, "mode": "delete"}]}
+    _, out = export(client, sid, zones)
+
+    chk = fitz.open(stream=out, filetype="pdf")
+    try:
+        pm = chk[0].get_pixmap()          # page A4 rendue a l'echelle 1
+        # (70, 130): dans le rectangle englobant, hors du triangle
+        assert pm.pixel(70, 130) == (90, 90, 90)
+        # (230, 80): franchement a l'interieur du triangle
+        assert pm.pixel(230, 80) == (255, 255, 255)
+    finally:
+        chk.close()
+
+
+def test_pixelated_polygon_mosaic_stays_inside_the_outline():
+    """La mosaique est capturee sur le rectangle englobant: c'est son masque
+    alpha qui l'empeche d'en recouvrir les bords."""
+    points = [fitz.Point(*p) for p in TRIANGLE]
+    rect = fitz.Rect(60, 60, 400, 140)
+    mask = _shape_mask(points, rect)
+
+    def at(x, y):
+        i = int((x - rect.x0) / rect.width * mask.width)
+        j = int((y - rect.y0) / rect.height * mask.height)
+        return mask.pixel(i, j)[0]
+
+    assert at(230, 70) == 255      # dans le triangle: la mosaique s'affiche
+    assert at(70, 130) == 0        # dans le rectangle, hors du triangle: transparent
+    assert at(390, 130) == 0
+
+
+def test_pixelated_polygon_on_a_scan_keeps_the_outside_intact(client):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    grey = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 300, 400), False)
+    grey.clear_with(90)
+    page.insert_image(page.rect, pixmap=grey)
+    page.insert_text((175, 100), "SECRETNAMEALPHA", fontsize=12)
+    data = doc.tobytes()
+    doc.close()
+
+    sid = open_doc(client, data)
+    zones = {"0": [{"type": "polygon", "points": TRIANGLE, "mode": "pixelate"}]}
+    _, out = export(client, sid, zones)
+
+    assert b"SECRETNAMEALPHA" not in every_byte(out)
+    chk = fitz.open(stream=out, filetype="pdf")
+    try:
+        assert chk[0].get_pixmap().pixel(70, 130) == (90, 90, 90)
+    finally:
+        chk.close()
 
 
 # ---------------------------------------------------------------- pages
@@ -247,6 +318,12 @@ def test_cannot_delete_every_page(client):
 # ---------------------------------------------------------------- verification
 
 
+def _zone(rect):
+    """Une zone telle que /api/export la prepare: son contour, et les
+    rectangles reellement rediges — ici un seul, la zone etant rectangulaire."""
+    return {"rect": rect, "rects": [rect]}
+
+
 def _doc_with_survivors() -> bytes:
     """Un PDF ou texte, annotation et champ occupent tous la zone: c'est
     exactement ce qu'un export rate produirait."""
@@ -270,7 +347,7 @@ def _doc_with_survivors() -> bytes:
 def test_verify_catches_text_annotations_and_fields():
     """Le controle porte sur les octets exportes et signale les trois familles
     de residus, pas seulement le texte."""
-    zone = {"rect": fitz.Rect(50, 80, 300, 140)}
+    zone = _zone(fitz.Rect(50, 80, 300, 140))
     leaks = _verify(_doc_with_survivors(), {0: [zone]}, {0: 0})
 
     kinds = {l["kind"] for l in leaks}
@@ -286,7 +363,7 @@ def test_verify_catches_text_annotations_and_fields():
 def test_verify_reports_the_page_number_of_the_exported_file():
     """Les zones sont indexees sur le document d'origine; apres suppression de
     pages, la fuite doit etre annoncee a son numero dans le fichier produit."""
-    zone = {"rect": fitz.Rect(50, 80, 300, 140)}
+    zone = _zone(fitz.Rect(50, 80, 300, 140))
     # zone posee sur la page 4 d'origine, devenue la page 1 (index 0) a l'export
     leaks = _verify(_doc_with_survivors(), {3: [zone]}, {3: 0})
     assert leaks and all(l["page"] == 1 for l in leaks)

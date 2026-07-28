@@ -19,10 +19,14 @@ zones, then export.
 Three shapes: **rectangle**, **polygon** (click the vertices, double-click to
 close) and **freehand**. Drag a zone to move it, its handles to resize it.
 
-Redaction can only operate on rectangles, so a polygon or freehand zone
-destroys everything inside its **bounding box**, which the UI draws as a
-dashed rectangle around the shape — that dashed box, not the outline, is what
-disappears from the file.
+What disappears follows the **outline you drew**, whatever its shape. PyMuPDF
+can only redact rectangles, so a polygon or freehand zone is cut into thin
+horizontal strips that hug the outline, and each strip is redacted. Strips
+overshoot the outline by at most one strip height (measured: 1.25 pt, under
+half a millimetre) — over-deleting a little is acceptable, leaving content
+alive inside the shape is not. That matters most on a scan, where the page is
+a single image: redacting the bounding box would destroy its pixels and turn
+the whole box white under a cover that followed the outline.
 
 Each zone has a mode, switched from its right-click menu:
 
@@ -67,9 +71,10 @@ only.
 ### Verification
 
 After writing the file, the exporter re-opens **the exported bytes** and looks
-for text, annotations or form fields still intersecting a redacted zone. Any
-survivor is reported in the status bar, so a failed redaction is visible
-rather than silent.
+for text, annotations or form fields still inside a redacted zone. A word
+counts as a survivor once a redacted strip covers a real part of it, not when
+it merely grazes the outline. Any survivor is reported in the status bar, so a
+failed redaction is visible rather than silent.
 
 ### Keyboard
 

@@ -20,6 +20,9 @@ RENDER_ZOOM = 4.0  # zoom de repli si le client ne demande pas de largeur
 MIN_ZOOM = 1.5
 MAX_ZOOM = 8.0     # garde-fou memoire: 8x sur A4 = ~128 Mpx
 MOSAIC_BLOCKS = 14  # largeur en "gros pixels" d'une zone repixelisee
+STRIP_HEIGHT = 2.0  # hauteur d'une bande de redaction, en points PDF
+MAX_STRIPS = 200    # garde-fou: une zone tres haute ne genere pas mille rects
+MASK_MAX_PX = 240   # resolution du masque qui decoupe une mosaique au contour
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 SESSION_TTL = 2 * 3600   # un document oublie ne doit pas rester en RAM
@@ -128,6 +131,100 @@ def api_inspect(sid: str):
     return JSONResponse(inspect_document(entry["bytes"]))
 
 
+def _is_box(points, rect) -> bool:
+    """Une zone rectangulaire n'a rien a decouper: son contour *est* son
+    rectangle englobant."""
+    return len(points) == 4 and all(
+        (abs(p.x - rect.x0) < 0.01 or abs(p.x - rect.x1) < 0.01)
+        and (abs(p.y - rect.y0) < 0.01 or abs(p.y - rect.y1) < 0.01)
+        for p in points)
+
+
+def _spans(points, y):
+    """Intervalles horizontaux interieurs au contour a l'ordonnee y.
+
+    Regle non-nulle (et non pair-impair): c'est celle qu'appliquent deja le
+    cache blanc pose par PyMuPDF et l'apercu SVG du navigateur. Un trace libre
+    qui se recoupe est donc plein ici comme il l'est a l'ecran."""
+    xs = []
+    for i, a in enumerate(points):
+        b = points[(i + 1) % len(points)]
+        if a.y == b.y:
+            continue
+        top, bot = (a, b) if a.y < b.y else (b, a)
+        if not top.y <= y < bot.y:
+            continue
+        xs.append((a.x + (y - a.y) * (b.x - a.x) / (b.y - a.y), 1 if b.y > a.y else -1))
+    xs.sort()
+    out, wind, start = [], 0, 0.0
+    for x, direction in xs:
+        if wind == 0:
+            start = x
+        wind += direction
+        if wind == 0 and x > start:
+            out.append((start, x))
+    return out
+
+
+def _merge(spans):
+    out = []
+    for a, b in sorted(spans):
+        if out and a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return out
+
+
+def _zone_rects(points, rect):
+    """Les rectangles a rediger pour une zone donnee.
+
+    PyMuPDF ne sait rediger que des rectangles. Rediger le rectangle englobant
+    d'un polygone ne se contente pas de supprimer trop de texte: sur un examen
+    scanne la page est une image, et PDF_REDACT_IMAGE_PIXELS en detruit alors
+    tous les pixels, si bien que le rectangle entier vire au blanc sous un
+    cache qui, lui, suivait le contour. On decoupe donc la zone en bandes
+    horizontales qui epousent le trace.
+
+    Les bandes debordent legerement le contour (union des trois lignes de
+    balayage de chaque bande): sur-effacer un peu est acceptable, laisser
+    survivre du contenu a l'interieur du trace ne l'est pas."""
+    if _is_box(points, rect):
+        return [rect]
+    n = max(1, min(MAX_STRIPS, int(rect.height / STRIP_HEIGHT) + 1))
+    h = rect.height / n
+    out = []
+    for i in range(n):
+        y0 = rect.y0 + i * h
+        y1 = y0 + h
+        sampled = [s for y in (y0, y0 + h / 2, min(y1, rect.y1 - 1e-6))
+                   for s in _spans(points, y)]
+        for a, b in _merge(sampled):
+            if b - a > 0.05:
+                out.append(fitz.Rect(a, y0, b, y1))
+    # contour degenere (aire nulle): mieux vaut son rectangle que rien du tout
+    return out or [rect]
+
+
+def _shape_mask(points, rect):
+    """Masque alpha du contour, a la taille du rectangle englobant: repose sur
+    la mosaique, il l'empeche de deborder du trace."""
+    if rect.width <= 0 or rect.height <= 0:
+        return None
+    s = min(MASK_MAX_PX / max(rect.width, rect.height), 4.0)
+    w = max(1, min(MASK_MAX_PX, round(rect.width * s)))
+    h = max(1, min(MASK_MAX_PX, round(rect.height * s)))
+    buf = bytearray(w * h)
+    for j in range(h):
+        y = rect.y0 + (j + 0.5) * rect.height / h
+        for a, b in _spans(points, y):
+            i0 = max(0, int((a - rect.x0) / rect.width * w))
+            i1 = min(w, int((b - rect.x0) / rect.width * w) + 1)
+            if i1 > i0:
+                buf[j * w + i0:j * w + i1] = b"\xff" * (i1 - i0)
+    return fitz.Pixmap(fitz.csGRAY, w, h, bytes(buf), False)
+
+
 def _mosaic_pixmap(page, rect):
     """Rend la zone en tout petit: en la reposant a sa taille d'origine on
     obtient une mosaique illisible du contenu initial."""
@@ -179,9 +276,26 @@ def _scrub_document(doc):
             pass
 
 
+LEAK_COVERAGE = 0.15   # part d'un mot dans la zone a partir de laquelle il fuit
+
+
+def _covered_fraction(rect, rects) -> float:
+    """Part de `rect` couverte par les bandes redigees. Les bandes ne se
+    chevauchent pas (une par ligne de balayage), leurs aires s'additionnent."""
+    area = rect.get_area()
+    if area <= 0:
+        return 0.0
+    return sum((rect & r).get_area() for r in rects) / area
+
+
 def _verify(out: bytes, zones_by_page, page_map):
     """Relecture du PDF reellement produit (et non du document en memoire):
-    reste-t-il du texte, une annotation ou un champ dans les zones ?"""
+    reste-t-il du texte, une annotation ou un champ dans les zones ?
+
+    Un mot n'est signale que si la zone mordait vraiment dessus. Depuis que la
+    redaction suit le contour dessine et non le rectangle englobant, un mot
+    qui frole le trace de quelques dixiemes de point est monnaie courante: le
+    signaler noierait les vraies fuites sous des avertissements sans objet."""
     leaks = []
     chk = fitz.open(stream=out, filetype="pdf")
     try:
@@ -189,9 +303,13 @@ def _verify(out: bytes, zones_by_page, page_map):
             new_no = page_map.get(pno)
             if new_no is None or not 0 <= new_no < chk.page_count:
                 continue
-            page, rects = chk[new_no], [z["rect"] for z in zs]
+            page = chk[new_no]
+            # les memes bandes que celles redigees: confronter le texte au
+            # rectangle englobant signalerait comme fuite ce qui est reste
+            # volontairement intact hors du trace.
+            rects = [r for z in zs for r in z["rects"]]
             for w in page.get_text("words"):
-                if any(fitz.Rect(w[:4]).intersects(r) for r in rects):
+                if _covered_fraction(fitz.Rect(w[:4]), rects) >= LEAK_COVERAGE:
                     leaks.append({"page": new_no + 1, "kind": "texte", "text": w[4]})
             for a in page.annots():
                 if any(a.rect.intersects(r) for r in rects):
@@ -212,8 +330,9 @@ async def api_export(payload: dict):
 
     # {"3": [{"points": [[x,y], ...], "mode": "delete"|"pixelate"}, ...]} en coordonnees PDF.
     # "points" est le contour de la zone (rectangle = 4 coins, mais aussi
-    # polygone ou trace libre) ; la suppression de texte se fait sur le
-    # rectangle englobant, le cache visuel blanc suit le contour exact.
+    # polygone ou trace libre). Tout suit ce contour: la redaction via les
+    # bandes de _zone_rects, le cache blanc, et la mosaique via son masque.
+    # Rien n'est jamais efface ni recouvert hors du trace.
     raw = payload.get("zones") or {}
     zones_by_page: dict[int, list[dict]] = {}
     for k, v in raw.items():
@@ -231,6 +350,8 @@ async def api_export(payload: dict):
             parsed.append({
                 "points": points,
                 "rect": rect,
+                "box": _is_box(points, rect),
+                "rects": _zone_rects(points, rect),
                 "mode": "pixelate" if z.get("mode") == "pixelate" else "delete",
             })
         if parsed:
@@ -263,7 +384,7 @@ async def api_export(payload: dict):
         for z in pixel_zs:
             pm = _mosaic_pixmap(page, z["rect"])
             if pm:
-                mosaics.append((z["rect"], pm))
+                mosaics.append((z, pm))
 
         # 2. redaction reelle de TOUTES les zones: le texte est supprime, les
         # pixels des images couvertes sont detruits (pas seulement masques) et
@@ -271,7 +392,7 @@ async def api_export(payload: dict):
         # LINE_ART_REMOVE_IF_TOUCHED est indispensable: par defaut PyMuPDF ne
         # retire qu'un trace *entierement* contenu dans la zone, si bien qu'une
         # signature qui deborde survivait intacte sous le cache blanc.
-        rects = [z["rect"] for z in zs]
+        rects = [r for z in zs for r in z["rects"]]
         _purge_annots(page, rects)
         for r in rects:
             page.add_redact_annot(r)
@@ -288,8 +409,21 @@ async def api_export(payload: dict):
             shape.commit()
 
         # 4. zones "repixeliser": on repose la mosaique par-dessus le vide.
-        for rect, pm in mosaics:
-            page.insert_image(rect, pixmap=pm)
+        # keep_proportion=False: la mosaique fait quelques pixels de cote, ses
+        # proportions arrondies ne sont pas exactement celles de la zone, et
+        # une image centree y laisserait deux bandes de contenu d'origine.
+        for z, pm in mosaics:
+            rect = z["rect"]
+            if z["box"]:
+                page.insert_image(rect, pixmap=pm, keep_proportion=False)
+                continue
+            # zone non rectangulaire: la mosaique est decoupee au contour,
+            # sinon elle recouvrirait tout le rectangle englobant.
+            mask = _shape_mask(z["points"], rect)
+            if mask is None:
+                continue
+            page.insert_image(rect, stream=pm.tobytes("png"),
+                              mask=mask.tobytes("png"), keep_proportion=False)
 
     # numero de page d'origine -> numero dans le document exporte
     page_map = {p: p - sum(1 for d in deleted_pages if d < p)

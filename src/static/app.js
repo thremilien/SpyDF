@@ -354,23 +354,7 @@ function renderAll() { pageEls.forEach((_, i) => renderZones(i)); }
 function modeLabel(mode) { return mode === 'pixelate' ? 'repixelisation' : 'suppression'; }
 
 function zoneLabel(z, i, idx) {
-  const base = `Zone ${idx + 1}, page ${i + 1}, ${modeLabel(z.mode)}`;
-  return z.type === 'rect'
-    ? base
-    : `${base}. La suppression porte sur le rectangle englobant en pointillés.`;
-}
-
-// Le contour dessiné n'est pas ce qui est effacé: PyMuPDF ne sait rédiger que
-// des rectangles, donc une zone non rectangulaire détruit tout son rectangle
-// englobant. On le montre en pointillés pour que ce qui disparaît soit visible.
-function appendBBox(svg, z, isSel) {
-  const [x0, y0, x1, y1] = bbox(z.points);
-  const r = document.createElementNS(svg.namespaceURI, 'rect');
-  r.setAttribute('x', x0); r.setAttribute('y', y0);
-  r.setAttribute('width', Math.max(x1 - x0, 0));
-  r.setAttribute('height', Math.max(y1 - y0, 0));
-  r.setAttribute('class', `zone-bbox zone-bbox-${z.mode}` + (isSel ? ' selected' : ''));
-  svg.appendChild(r);
+  return `Zone ${idx + 1}, page ${i + 1}, ${modeLabel(z.mode)}`;
 }
 
 function renderZones(i) {
@@ -384,8 +368,6 @@ function renderZones(i) {
 
   list.forEach((z, idx) => {
     const isSel = !locked && selected && selected.page === i && selected.index === idx;
-    if (z.type !== 'rect') appendBBox(svg, z, isSel);
-
     const poly = document.createElementNS(svg.namespaceURI, 'polygon');
     poly.setAttribute('points', z.points.map(p => p.join(',')).join(' '));
     poly.setAttribute('class', `zone zone-${z.mode}` + (isSel ? ' selected' : ''));

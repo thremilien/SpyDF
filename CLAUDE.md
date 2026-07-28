@@ -97,6 +97,15 @@ allowed a one-line comment instead of a docstring.
   alone, never from a zone. Redacting over an image does rewrite its stream, but
   promising an erasure a zone might not deliver is the one mistake this pane
   must not make.
+- A set of zones can be saved to and restored from a `.json`
+  (`saveZoneSet`/`loadZoneSet` in `src/static/app.js`). It stays client-side: it
+  never goes to the server, and nothing is written to localStorage — a tool that
+  holds documents in RAM only has no business leaving a marking on disk of its
+  own accord. The file has been on a disk between two runs, so everything in it
+  is validated before it becomes a zone, and a bad value drops the zone rather
+  than being clamped into something plausible: a redaction placed by guesswork is
+  worse than a missing one, which the user can see. A saved colour is kept as-is
+  (it may have been picked with the pipette); only a missing one is re-sampled.
 - Not everything a page carries is drawn on it: `/Alt`, `/ActualText` and `/E`
   hang off the structure tree, so redaction cannot reach them and only the
   scrubbing removes them. `src/probe.py` reads those keys and `src/app.py`

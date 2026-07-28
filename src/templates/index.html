@@ -70,6 +70,16 @@
     <svg viewBox="0 0 18 18" fill="none"><path d="M4 5.5h10M7.5 5.5V4a1 1 0 011-1h1a1 1 0 011 1v1.5M5.5 5.5l.6 8a1 1 0 001 .9h3.8a1 1 0 001-.9l.6-8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
   </button>
 
+  <input type="file" id="zoneFile" accept="application/json,.json" hidden>
+  <button id="saveZones" class="btn icon-only" disabled
+          title="Save the zones to a file (Ctrl+S)" aria-label="Save the zones to a file">
+    <svg viewBox="0 0 18 18" fill="none"><path d="M3.5 3.5h8L14.5 6.5v8a1 1 0 01-1 1h-9a1 1 0 01-1-1v-10a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M6 3.5v4h5v-4M6 15.5v-4h6v4" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+  </button>
+  <button id="loadZones" class="btn icon-only"
+          title="Restore zones from a file (or drop the .json on the page)" aria-label="Restore zones from a file">
+    <svg viewBox="0 0 18 18" fill="none"><path d="M2.5 5.5a1 1 0 011-1h3.2l1.3 1.6h6.5a1 1 0 011 1v6.4a1 1 0 01-1 1h-11a1 1 0 01-1-1z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M9 12.5v-5M9 7.5L7.2 9.4M9 7.5l1.8 1.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+
   <span id="pnum" class="pnum">— / —</span>
 
   <div class="btn-group" role="group" aria-label="Zoom">
@@ -153,6 +163,7 @@
       <li>What disappears follows the <b>drawn outline</b>, polygons and freehand included: nothing outside it is erased or covered.</li>
       <li><b>Delete</b> erases the content; <b>Pixelate</b> leaves nothing but an unreadable mosaic.</li>
       <li>A delete zone is covered in the colour of the paper it was drawn on, averaged along its outline. Change it in the zone menu — three <b>RGB</b> numbers, or the <b>pipette</b> to take a colour from a click on the page.</li>
+      <li><b>Save the zones</b> (<b>Ctrl+S</b>) writes them to a small <b>.json</b> next to the PDF; the folder button, or dropping that file back on the page, restores them — on this document or on the next copy of the same exam.</li>
       <li>A <b>watermark</b> (typed in the field next to Export) is stamped diagonally across every exported page; a preview appears on the pages as you type.</li>
     </ul>
   </div>

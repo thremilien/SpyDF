@@ -77,6 +77,30 @@ would otherwise start a word selection on the nearest text — which a
 translation or dictionary extension then picks up on a word you never meant to
 select.
 
+### Saving a set of zones
+
+The disk button in the toolbar (or `Ctrl+S`) writes the zones to a small
+**`.json`** file: their outlines, modes and colours, the pages marked for
+deletion, the watermark and the state of the scrubbing checkbox. The folder
+button next to it reads one back — so does dropping the `.json` onto the page.
+
+Two things it is for. A browser reload no longer costs you an afternoon of
+marking. And since every coordinate is in PDF points, independent of the zoom
+and of the screen, the zones drawn on one copy of an exam replay onto the next
+one: the header block sits in the same place on all of them.
+
+Restoring replaces the current marking rather than merging into it — a file
+loaded twice would otherwise double every zone — and it goes through the undo
+stack, so `Ctrl+Z` puts back what was there before. Zones that fall on pages the
+document does not have, and any the file describes badly, are reported in the
+status bar rather than quietly dropped or bent into shape: a redaction placed by
+guesswork is worse than one that is visibly missing.
+
+The file holds coordinates, not content, and never leaves the browser — it is
+not sent to the server, and nothing is kept in local storage. A tool that holds
+documents in memory only has no business leaving your marking on disk unless you
+ask it to.
+
 ### Pages
 
 The trash button on a page marks it for deletion; the page is dropped from the
@@ -180,7 +204,9 @@ failed redaction is visible rather than silent.
 
 ### Keyboard
 
-`Ctrl+Z` / `Ctrl+Y` undo and redo. `Tab` moves between zones, `Enter` opens
+`Ctrl+Z` / `Ctrl+Y` undo and redo, `Ctrl+S` saves the zones to a file (not the
+browser's copy of the page, which would be a broken snapshot of an interface and
+never the work). `Tab` moves between zones, `Enter` opens
 the selected zone's menu, `Delete` removes it, `Esc` cancels. `Ctrl` with
 `+` / `−` / `0` zooms; arrows, `Page Up`/`Page Down`, `Home`/`End` and `Space`
 held with a drag move around a zoomed page.

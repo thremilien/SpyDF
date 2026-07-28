@@ -1,0 +1,15 @@
+services:
+  spydf:
+    build: .
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8765
+    expose:
+      - "8765"
+    restart: unless-stopped
+    networks:
+      - dokploy-network
+
+networks:
+  dokploy-network:
+    external: true

@@ -229,9 +229,7 @@ stageEl.addEventListener('drop', e => {
   stageEl.classList.remove('drag-over');
   $('drop').classList.remove('drag-over');
   const f = e.dataTransfer.files && e.dataTransfer.files[0];
-  if (!f) return;
-  // a dropped zone file restores a marking, it does not open a document
-  if (isZoneFile(f)) loadZoneSet(f); else openFile(f);
+  if (f) openFile(f);
 });
 
 // The drop zone opens the file picker too: it is the first thing you see, and
@@ -1236,9 +1234,6 @@ window.addEventListener('keydown', e => {
   // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y — insensitive to Shift and Caps Lock
   if (mod && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (mod && k === 'y') { e.preventDefault(); redo(); return; }
-  // Ctrl+S saves the zones, not the browser's copy of the page — which on this
-  // app would be a broken snapshot of an interface, and never the work.
-  if (mod && k === 's') { e.preventDefault(); saveZoneSet(); return; }
   // Ctrl +/-/0, as everywhere else — taken from the browser, which would
   // otherwise scale the whole interface instead of the pages.
   if (mod && (k === '+' || k === '=' || k === 'add')) { e.preventDefault(); zoomFromKeyboard(1); return; }
@@ -1290,8 +1285,6 @@ function syncButtons() {
   $('undo').disabled = busy || history.length === 0;
   $('redo').disabled = busy || redoStack.length === 0;
   $('clear').disabled = busy || !n;
-  $('saveZones').disabled = busy || !sid;
-  $('loadZones').disabled = busy;
   $('export').disabled = busy || !(total || deletedPages.size || watermarkValue());
   updateZoomUI();
 }
@@ -1301,6 +1294,9 @@ function updateStatus() {
   const n = (zones[activePage] || []).length;
   $('pnum').textContent = pages.length ? `${activePage + 1} / ${pages.length}` : '— / —';
   syncButtons();
+  // every mutation of the zones or the pages ends here, so this is the one
+  // place the reload snapshot has to be written from
+  saveState();
   if (busy) return;   // do not overwrite a progress message
   const delTxt = deletedPages.size ? `, ${deletedPages.size} page(s) deleted` : '';
   setStatus(pages.length
@@ -1343,169 +1339,68 @@ $('export').onclick = async () => {
   }
 };
 
-// ---------- saving and restoring a set of zones ----------
-// A zone is geometry, not content: the outlines, their mode and their colour say
-// where a name sits on the page, not what it says. Written and read here, in the
-// browser — the file never goes to the server, and nothing is kept in
-// localStorage: a tool that holds documents in RAM only has no business leaving
-// a marking on the disk of its own accord.
+// ---------- surviving a reload ----------
+// The document itself never left the server, but the page held the only copy of
+// the session id, of the zones and of the page geometry — so a reload, wanted or
+// not, threw away an afternoon of marking and asked for the file again.
 //
-// What it buys: a reload no longer loses an afternoon's work, and the header
-// zones drawn on one copy of an exam replay onto the next one, since every
-// coordinate is in PDF points and independent of the zoom.
-const ZONE_FILE_FORMAT = 'spydf-zones';
-const ZONE_FILE_VERSION = 1;
-const MAX_RESTORED_ZONES = 5000;   // a hand-drawn set never comes near this
-const MAX_ZONE_POINTS = 10000;     // a freehand stroke is a few hundred
+// sessionStorage rather than localStorage: it survives a reload, including
+// Ctrl+F5, and goes when the tab does. A marking is not content — it says where
+// a name sits on the page, not what it says — but it has no reason to outlive
+// the sitting either, and the document it belongs to expires server-side anyway.
+const STATE_KEY = 'spydf-session';
 
-function isZoneFile(f) {
-  return f.type === 'application/json' || /\.json$/i.test(f.name);
-}
-
-function zoneSetName() {
-  return (docName.replace(/\.pdf$/i, '') || 'document') + '_zones.json';
-}
-
-function zoneSetPayload() {
-  return {
-    format: ZONE_FILE_FORMAT,
-    version: ZONE_FILE_VERSION,
-    saved: new Date().toISOString(),
-    document: { name: docName, page_count: pages.length },
-    zones,
-    deleted_pages: [...deletedPages],
-    strip_meta: $('meta').checked,
-    watermark: $('wm').value,
-  };
-}
-
-function saveZoneSet() {
+function saveState() {
   if (!sid) return;
-  const payload = zoneSetPayload();
-  const name = zoneSetName();
-  const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)],
-    { type: 'application/json' }));
-  const a = document.createElement('a');
-  a.href = url; a.download = name;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
-  const total = Object.values(zones).reduce((a, b) => a + b.length, 0);
-  setStatus(`${total} zone(s) saved to "${name}".`, 'ok');
-}
-
-// ---- reading one back ----
-// The file has been on a disk between two runs: everything in it is checked
-// before it becomes a zone. A bad value is not clamped into something plausible,
-// it drops the zone — a redaction placed by guesswork is worse than a missing
-// one, which the user can see.
-const finite = v => (typeof v === 'number' && isFinite(v) ? v : null);
-
-function cleanPoints(raw) {
-  if (!Array.isArray(raw) || raw.length < 2 || raw.length > MAX_ZONE_POINTS) return null;
-  const pts = [];
-  for (const p of raw) {
-    if (!Array.isArray(p) || p.length < 2) return null;
-    const x = finite(p[0]), y = finite(p[1]);
-    if (x === null || y === null) return null;
-    pts.push([x, y]);
-  }
-  return pts;
-}
-
-function cleanColor(raw) {
-  if (!Array.isArray(raw) || raw.length < 3) return null;
-  const c = raw.slice(0, 3).map(v => Math.round(finite(v) ?? -1));
-  return c.every(v => v >= 0 && v <= 255) ? c : null;
-}
-
-function cleanZone(raw) {
-  if (!raw || typeof raw !== 'object') return null;
-  const points = cleanPoints(raw.points);
-  if (!points) return null;
-  // the rectangle handles assume four corners: anything else is a polygon,
-  // whatever the file calls it
-  const type = raw.type === 'rect' && points.length === 4 ? 'rect'
-    : raw.type === 'freehand' ? 'freehand' : 'polygon';
-  const z = { type, points, mode: raw.mode === 'pixelate' ? 'pixelate' : 'delete' };
-  const color = cleanColor(raw.color);
-  if (color) z.color = color;
-  return z;
-}
-
-function parseZoneSet(text, pageCount) {
-  const d = JSON.parse(text);
-  if (!d || d.format !== ZONE_FILE_FORMAT) throw new Error('not a SpyDF zone file');
-  if (d.version > ZONE_FILE_VERSION) throw new Error('written by a newer version of SpyDF');
-  const zs = {}, del = new Set();
-  let kept = 0, dropped = 0, outside = 0;
-  for (const [key, list] of Object.entries(d.zones || {})) {
-    const n = Number(key);
-    if (!Number.isInteger(n) || n < 0) { dropped += (list || []).length; continue; }
-    if (n >= pageCount) { outside += (list || []).length; continue; }
-    for (const raw of Array.isArray(list) ? list : []) {
-      if (kept >= MAX_RESTORED_ZONES) { dropped++; continue; }
-      const z = cleanZone(raw);
-      if (!z) { dropped++; continue; }
-      (zs[n] = zs[n] || []).push(z);
-      kept++;
-    }
-  }
-  for (const p of Array.isArray(d.deleted_pages) ? d.deleted_pages : []) {
-    if (Number.isInteger(p) && p >= 0 && p < pageCount) del.add(p);
-  }
-  return { zones: zs, deleted: del, kept, dropped, outside, meta: d };
-}
-
-async function loadZoneSet(f) {
-  if (!f) return;
-  if (!sid) { setStatus('Open a PDF first, then restore its zones.', 'warn'); return; }
-  // dropping a zone file on a document still rendering is easy to do, and a
-  // silent refusal reads as a file that failed to load
-  if (busy) { setStatus('Wait for the document to finish loading, then restore the zones.', 'warn'); return; }
-  let parsed;
   try {
-    parsed = parseZoneSet(await f.text(), pages.length);
-  } catch (err) {
-    setStatus(`Could not read "${f.name}": ${err.message}.`, 'warn');
-    return;
+    sessionStorage.setItem(STATE_KEY, JSON.stringify({
+      sid, zones,
+      deleted: [...deletedPages],
+      strip_meta: $('meta').checked,
+      watermark: $('wm').value,
+    }));
+  } catch {
+    // a full or disabled storage costs the reload safety net, nothing else
   }
-  // replacing, not merging: the file describes a whole marking, and merging
-  // would silently double every zone if it is loaded twice
-  pushHistory();
-  zones = parsed.zones;
-  deletedPages = parsed.deleted;
-  // A saved colour is kept as it is: it may have been chosen with the pipette,
-  // and re-sampling would quietly overrule that. One that is missing or
-  // unreadable is sampled from the paper here, exactly as a freshly drawn zone
-  // is — leaving it to the server's white fallback would advertise the
-  // redaction on anything but white paper.
-  for (const [n, list] of Object.entries(zones)) {
-    list.forEach(z => { if (!z.color) z.color = contourColor(Number(n), z.points); });
-  }
-  selected = null; closeMenu(); cancelPending();
-  if (typeof parsed.meta.strip_meta === 'boolean') $('meta').checked = parsed.meta.strip_meta;
-  if (typeof parsed.meta.watermark === 'string') $('wm').value = parsed.meta.watermark.slice(0, 80);
-  syncDeletedUI();
-  renderAll();   // repaints every page, and refreshes the inspector page by page
-  updateStatus();
-
-  const from = parsed.meta.document && parsed.meta.document.name;
-  const notes = [];
-  if (from && from !== docName) notes.push(`saved from "${from}"`);
-  if (parsed.outside) notes.push(`${parsed.outside} zone(s) on pages this document does not have`);
-  if (parsed.dropped) notes.push(`${parsed.dropped} unreadable zone(s) ignored`);
-  setStatus(`${parsed.kept} zone(s) restored from "${f.name}"`
-    + (notes.length ? ` — ${notes.join(', ')}.` : '.'),
-    parsed.dropped || parsed.outside ? 'warn' : 'ok');
 }
 
-$('saveZones').onclick = saveZoneSet;
-$('loadZones').onclick = () => { if (!busy) $('zoneFile').click(); };
-$('zoneFile').addEventListener('change', e => {
-  const f = e.target.files && e.target.files[0];
-  e.target.value = '';   // same file twice in a row must fire again
-  if (f) loadZoneSet(f);
-});
+function clearState() {
+  try { sessionStorage.removeItem(STATE_KEY); } catch { /* nothing to clear */ }
+}
+
+// Only the marking is kept here; the document, its name and its page geometry
+// are asked back from the server, which is the one that still has them.
+async function restoreState() {
+  let saved;
+  try { saved = JSON.parse(sessionStorage.getItem(STATE_KEY) || 'null'); } catch { saved = null; }
+  if (!saved || !saved.sid) return;
+
+  const r = await fetch(`/api/session/${saved.sid}`).catch(() => null);
+  if (!r || !r.ok) { clearState(); return; }   // expired, or the server restarted
+  const d = await r.json();
+
+  sid = d.sid; pages = d.pages; docName = d.name;
+  zones = saved.zones && typeof saved.zones === 'object' ? saved.zones : {};
+  deletedPages = new Set(Array.isArray(saved.deleted) ? saved.deleted : []);
+  history = []; redoStack = [];   // the undo stack belongs to the page that is gone
+  activePage = 0; selected = null;
+  if (typeof saved.strip_meta === 'boolean') $('meta').checked = saved.strip_meta;
+  if (typeof saved.watermark === 'string') $('wm').value = saved.watermark;
+
+  setBusy(true, 'Picking the document back up…');
+  $('drop').hidden = true; pagesEl.hidden = false;
+  buildPages();
+  syncDeletedUI();
+  renderAll();   // buildPages lays out empty pages: the zones are drawn here
+  onDocumentOpened(sid);
+  awaitFirstPage();
+}
+
+// the checkbox does not go through updateStatus, and it decides what the export
+// strips: it has to be in the snapshot too
+$('meta').addEventListener('change', saveState);
+
+restoreState();
 
 // Preview and Export button follow the watermark field live. The button reacts
 // on every keystroke, the preview waits for a pause: redrawing every page on

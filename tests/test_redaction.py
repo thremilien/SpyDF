@@ -395,6 +395,25 @@ def test_unknown_session(client):
     assert r.status_code == 404
 
 
+def test_a_live_session_can_be_picked_up_again(client):
+    """What a reloaded page asks for: the document is still there, and its geometry."""
+    data = build_pdf()
+    opened = client.post("/api/open", files={"file": ("exam.pdf", data, "application/pdf")}).json()
+
+    r = client.get(f"/api/session/{opened['sid']}")
+    assert r.status_code == 200
+    again = r.json()
+    assert again["sid"] == opened["sid"]
+    assert again["name"] == opened["name"]
+    # same geometry as on opening: the zones are laid back on it unchanged
+    assert again["pages"] == opened["pages"]
+
+
+def test_an_expired_session_cannot_be_picked_up(client):
+    """A marking whose document is gone must be dropped, not drawn over nothing."""
+    assert client.get("/api/session/deadbeef").status_code == 404
+
+
 def test_export_without_zones_is_refused(client):
     doc = fitz.open()
     doc.new_page()

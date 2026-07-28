@@ -97,15 +97,15 @@ allowed a one-line comment instead of a docstring.
   alone, never from a zone. Redacting over an image does rewrite its stream, but
   promising an erasure a zone might not deliver is the one mistake this pane
   must not make.
-- A set of zones can be saved to and restored from a `.json`
-  (`saveZoneSet`/`loadZoneSet` in `src/static/app.js`). It stays client-side: it
-  never goes to the server, and nothing is written to localStorage — a tool that
-  holds documents in RAM only has no business leaving a marking on disk of its
-  own accord. The file has been on a disk between two runs, so everything in it
-  is validated before it becomes a zone, and a bad value drops the zone rather
-  than being clamped into something plausible: a redaction placed by guesswork is
-  worse than a missing one, which the user can see. A saved colour is kept as-is
-  (it may have been picked with the pipette); only a missing one is re-sampled.
+- A reload must not cost the work: `saveState`/`restoreState` in
+  `src/static/app.js` keep the marking (zones, deleted pages, watermark,
+  scrubbing checkbox) in `sessionStorage` — it survives Ctrl+F5 and goes when
+  the tab does, where localStorage would outlive the sitting for no reason. The
+  document is not stored client-side: only its session id is, and
+  `GET /api/session/{sid}` hands back the name and the page geometry, or 404s.
+  A 404 clears the marking rather than drawing it over nothing. `saveState` is
+  called from `updateStatus`, which every zone and page mutation already ends
+  in — keep it that way rather than sprinkling calls at each mutation site.
 - Not everything a page carries is drawn on it: `/Alt`, `/ActualText` and `/E`
   hang off the structure tree, so redaction cannot reach them and only the
   scrubbing removes them. `src/probe.py` reads those keys and `src/app.py`

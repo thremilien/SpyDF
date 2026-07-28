@@ -131,6 +131,37 @@ def _log_ip_fields(request: Request) -> dict:
     return fields
 
 
+def _page_geometry(doc) -> list[dict]:
+    """The rectangle of every page, which is what the client lays its zones on."""
+    return [{"w": p.rect.width, "h": p.rect.height, "x0": p.rect.x0, "y0": p.rect.y0} for p in doc]
+
+
+@app.get("/api/session/{sid}")
+def api_session(sid: str):
+    """Report a still-open session, so a reloaded page can pick it up again.
+
+    A browser reload loses the session id and the page geometry, but not the
+    document: that is held here until it expires. The client keeps only the
+    marking it drew and asks this route whether the document behind it is still
+    there — an expired or unknown session answers 404, and the marking goes with
+    it rather than being drawn over nothing.
+
+    Args:
+        sid: Session id.
+
+    Returns:
+        The same shape as `/api/open`: {"sid", "name", "pages"}.
+
+    Raises:
+        HTTPException: 404 for an unknown or expired session.
+    """
+    entry = _get(sid)
+    doc = fitz.open(stream=entry["bytes"], filetype="pdf")
+    pages = _page_geometry(doc)
+    doc.close()
+    return {"sid": sid, "name": entry["name"], "pages": pages}
+
+
 @app.post("/api/open")
 async def api_open(request: Request, file: UploadFile = File(...)):
     """Open a PDF and hold it in memory under a fresh session id.
@@ -170,9 +201,7 @@ async def api_open(request: Request, file: UploadFile = File(...)):
                 "import_rejected", level=logging.WARNING, reason="password_protected", **ip_fields
             )
             raise HTTPException(400, "password-protected PDF")
-        pages = [
-            {"w": p.rect.width, "h": p.rect.height, "x0": p.rect.x0, "y0": p.rect.y0} for p in doc
-        ]
+        pages = _page_geometry(doc)
         doc.close()
     except HTTPException:
         raise

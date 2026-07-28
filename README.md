@@ -125,6 +125,12 @@ uv run main.py
 Binds `127.0.0.1:8765` and opens your browser. Set `PORT` to change the port,
 `HOST` to change the interface.
 
+Logging (connection, import, export — see `src/logs.py`) always goes to
+stderr. `SPYDF_LOG_LEVEL` sets the verbosity (default `INFO`). `SPYDF_LOG_FILE`
+also writes a rotating file (1 MB × 3). `SPYDF_LOG_FILENAMES=1` opts into
+logging uploaded filenames, which are identifying (`copie_jean_dupont.pdf`)
+and are otherwise never recorded.
+
 ### Locally, in Docker
 
 ```bash

@@ -1,5 +1,7 @@
 """FastAPI app: routes for opening, rendering, redacting and downloading PDFs."""
 
+import logging
+import math
 import mimetypes
 import os
 import re
@@ -9,10 +11,11 @@ import uuid
 from pathlib import Path
 
 import fitz
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from src.logs import log_event
 from src.probe import inspect_document
 
 PACKAGE_DIR = Path(__file__).parent
@@ -27,6 +30,12 @@ MASK_MAX_PX = 240   # resolution du masque qui decoupe une mosaique au contour
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 SESSION_TTL = 2 * 3600   # un document oublie ne doit pas rester en RAM
 MAX_SESSIONS = 32
+
+WATERMARK_MAX_LEN = 80
+WATERMARK_MIN_SIZE = 8
+WATERMARK_MAX_SIZE = 200
+WATERMARK_DIAGONAL_RATIO = 0.78   # part de la diagonale que doit occuper le texte
+WATERMARK_FONT = "helv"           # police base-14, aucun fichier a embarquer
 
 # sur certains systemes .js est devine comme application/javascript, qui ne
 # recoit pas de charset: les accents du JS arrivent alors casses dans l'UI.
@@ -72,12 +81,40 @@ def _safe_filename(name: str) -> str:
     return name[:100] or "document.pdf"
 
 
+SID_LOG_LEN = 8   # un sid entier est une capacite d'acces (/api/download/{key}):
+# on ne loggue jamais que ce prefixe, jamais le sid complet.
+
+UA_MAX_LEN = 120  # le user-agent est fourni par le client: on le borne avant
+# de le journaliser, il n'a rien d'un champ de confiance.
+
+
+def _sid_prefix(sid: str) -> str:
+    return (sid or "")[:SID_LOG_LEN]
+
+
+def _log_ip_fields(request: Request) -> dict:
+    """request.client.host est l'adresse reelle du pair TCP. X-Forwarded-For
+    est un en-tete fourni par le client (ou par le reverse proxy Dokploy /
+    Traefik en amont) et n'est donc pas fiable a lui seul: on le journalise a
+    part, sans jamais l'y substituer."""
+    fields = {"ip": request.client.host if request.client else "?"}
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        fields["xff"] = xff.split(",")[0].strip()
+    return fields
+
+
 @app.post("/api/open")
-async def api_open(file: UploadFile = File(...)):
+async def api_open(request: Request, file: UploadFile = File(...)):
+    start = time.perf_counter()
+    ip_fields = _log_ip_fields(request)
     data = await file.read()
     if not data:
+        log_event("import_rejected", level=logging.WARNING, reason="empty", **ip_fields)
         raise HTTPException(400, "fichier vide")
     if len(data) > MAX_UPLOAD_BYTES:
+        log_event("import_rejected", level=logging.WARNING, reason="too_large",
+                  size=len(data), **ip_fields)
         raise HTTPException(413, "fichier trop volumineux (200 Mo maximum)")
     try:
         doc = fitz.open(stream=data, filetype="pdf")
@@ -85,6 +122,8 @@ async def api_open(file: UploadFile = File(...)):
         # passe on ne pourrait ni rendre ni rediger quoi que ce soit.
         if doc.needs_pass:
             doc.close()
+            log_event("import_rejected", level=logging.WARNING,
+                      reason="password_protected", **ip_fields)
             raise HTTPException(400, "PDF protege par mot de passe")
         pages = [{"w": p.rect.width, "h": p.rect.height,
                   "x0": p.rect.x0, "y0": p.rect.y0} for p in doc]
@@ -92,10 +131,27 @@ async def api_open(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
+        # le message d'exception peut en principe citer du contenu du fichier:
+        # on ne le journalise pas, et jamais le nom du fichier non plus.
+        log_event("import_rejected", level=logging.WARNING, reason="unreadable", **ip_fields)
         raise HTTPException(400, f"PDF illisible: {e}")
 
     name = _safe_filename(file.filename or "document.pdf")
     sid = _put(name, data)
+
+    # Regle de confidentialite: le nom de fichier depose est potentiellement
+    # identifiant ("copie_jean_dupont.pdf"). Il n'est journalise que si
+    # l'operateur l'a explicitement demande via SPYDF_LOG_FILENAMES=1; par
+    # defaut il n'apparait nulle part dans les logs. Ne pas "ameliorer" cela
+    # en le rajoutant sans cette condition.
+    fields = {
+        "sid": _sid_prefix(sid), "size": len(data), "pages": len(pages),
+        **ip_fields, "ms": round((time.perf_counter() - start) * 1000),
+    }
+    if os.environ.get("SPYDF_LOG_FILENAMES") == "1":
+        fields["filename"] = name
+    log_event("import", **fields)
+
     return {"sid": sid, "name": name, "pages": pages}
 
 
@@ -276,6 +332,118 @@ def _scrub_document(doc):
             pass
 
 
+# Helvetica base-14 n'encode que du Latin-1: un tiret cadratin ou une
+# apostrophe typographique y ressort en glyphe parasite ("COPIE · NE PAS"
+# pour un "—" tape par l'operateur). Les caracteres francais accentues, eux,
+# sont dans Latin-1 et passent tels quels.
+_WATERMARK_FOLD = str.maketrans({
+    "–": "-", "—": "-", "−": "-", "‑": "-",
+    "‘": "'", "’": "'", "′": "'",
+    "“": '"', "”": '"',
+    "…": "...",
+})
+
+
+def _normalize_watermark(raw) -> str:
+    """Nettoie le filigrane fourni par le client: pas de saut de ligne (casserait
+    la mise en page sur une seule ligne), pas de caractere de controle, longueur
+    bornee, et rien qui sorte de Latin-1. Une chaine vide ou blanche equivaut a
+    "pas de filigrane"."""
+    if not isinstance(raw, str):
+        return ""
+    text = "".join(c if c.isprintable() else " " for c in raw)
+    text = text.translate(_WATERMARK_FOLD)
+    # ce qui reste hors Latin-1 (emoji, alphabet non latin) n'a pas de glyphe
+    # dans la police: on le replie en ASCII, sinon on le laisse tomber.
+    text = "".join(
+        c if c.isascii() or _in_latin1(c)
+        else unicodedata.normalize("NFKD", c).encode("ascii", "ignore").decode()
+        for c in text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:WATERMARK_MAX_LEN]
+
+
+def _in_latin1(c: str) -> bool:
+    try:
+        c.encode("latin-1")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+_WATERMARK_FONT_METRICS = fitz.Font(WATERMARK_FONT)
+# hauteur d'une ligne de texte, en multiples de la taille de police: du haut
+# des ascendantes au bas des descendantes.
+_WATERMARK_LINE_HEIGHT = _WATERMARK_FONT_METRICS.ascender - _WATERMARK_FONT_METRICS.descender
+
+
+def _apply_watermark(data: bytes, text: str) -> bytes:
+    """Tamponne `text` en diagonal sur chaque page, du coin bas-gauche vers le
+    coin haut-droit. Toute erreur ici ne doit pas faire echouer l'export: un
+    export sans filigrane vaut mieux qu'une export perdu."""
+    try:
+        doc = fitz.open(stream=data, filetype="pdf")
+        try:
+            for page in doc:
+                rect = page.rect
+                if rect.width <= 0 or rect.height <= 0:
+                    continue
+                center = fitz.Point((rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2)
+                diag = math.hypot(rect.width, rect.height)
+                angle = math.degrees(math.atan2(rect.height, rect.width))
+
+                stamp = text
+                try:
+                    w0 = fitz.get_text_length(stamp, fontname=WATERMARK_FONT, fontsize=1)
+                except Exception:
+                    # caractere hors Latin-1 (base-14 Helvetica): on retombe sur
+                    # une version ASCII plutot que de renoncer au filigrane.
+                    stamp = unicodedata.normalize("NFKD", stamp).encode("ascii", "ignore").decode()
+                    if not stamp:
+                        continue
+                    w0 = fitz.get_text_length(stamp, fontname=WATERMARK_FONT, fontsize=1)
+                if w0 <= 0:
+                    continue
+
+                fontsize = diag * WATERMARK_DIAGONAL_RATIO / w0
+
+                # garde-fou geometrique: le texte n'est pas juste une ligne
+                # sans epaisseur, il a aussi une hauteur typographique. Une
+                # fois la boite (largeur x hauteur) pivotee de l'angle de la
+                # diagonale, elle peut deborder du rectangle de la page - a
+                # fortiori sur une page etroite ou avec un texte tres court,
+                # qui pousse la police vers son plafond. On borne donc aussi
+                # la taille de police a ce que la boite pivotee tient dans la
+                # page, quitte a rester en-dessous du ratio vise ci-dessus.
+                denom_w = w0 + _WATERMARK_LINE_HEIGHT * rect.height / rect.width
+                denom_h = w0 + _WATERMARK_LINE_HEIGHT * rect.width / rect.height
+                fit_cap = diag / max(denom_w, denom_h) * 0.97
+                fontsize = min(fontsize, fit_cap)
+
+                fontsize = max(WATERMARK_MIN_SIZE, min(WATERMARK_MAX_SIZE, fontsize))
+
+                tl = fitz.get_text_length(stamp, fontname=WATERMARK_FONT, fontsize=fontsize)
+                # centre le texte (largeur + hauteur typographique) sur le
+                # pivot: apres rotation autour de ce meme point, il reste
+                # centre sur la page quel que soit l'angle.
+                vert_off = (_WATERMARK_FONT_METRICS.ascender
+                            + _WATERMARK_FONT_METRICS.descender) / 2 * fontsize
+                origin = fitz.Point(center.x - tl / 2, center.y + vert_off)
+
+                try:
+                    page.insert_text(origin, stamp, fontsize=fontsize, fontname=WATERMARK_FONT,
+                                     color=(0.5, 0.5, 0.5), fill_opacity=0.2,
+                                     morph=(center, fitz.Matrix(angle)), overlay=True)
+                except Exception:
+                    continue
+            out = doc.tobytes(garbage=4, deflate=True, clean=True)
+        finally:
+            doc.close()
+        return out
+    except Exception:
+        return data
+
+
 LEAK_COVERAGE = 0.15   # part d'un mot dans la zone a partir de laquelle il fuit
 
 
@@ -325,8 +493,15 @@ def _verify(out: bytes, zones_by_page, page_map):
 
 
 @app.post("/api/export")
-async def api_export(payload: dict):
-    entry = _get(payload.get("sid") or "")
+async def api_export(request: Request, payload: dict):
+    start = time.perf_counter()
+    sid_prefix = _sid_prefix(payload.get("sid") or "")
+    try:
+        entry = _get(payload.get("sid") or "")
+    except HTTPException:
+        log_event("export_rejected", level=logging.WARNING,
+                  reason="unknown_session", sid=sid_prefix)
+        raise
 
     # {"3": [{"points": [[x,y], ...], "mode": "delete"|"pixelate"}, ...]} en coordonnees PDF.
     # "points" est le contour de la zone (rectangle = 4 coins, mais aussi
@@ -361,8 +536,12 @@ async def api_export(payload: dict):
     # pas besoin de rediger une page qui va disparaitre entierement
     zones_by_page = {p: zs for p, zs in zones_by_page.items() if p not in deleted_pages}
 
-    if not zones_by_page and not deleted_pages:
-        raise HTTPException(400, "aucune zone ni page supprimee")
+    watermark = _normalize_watermark(payload.get("watermark"))
+
+    if not zones_by_page and not deleted_pages and not watermark:
+        log_event("export_rejected", level=logging.WARNING,
+                  reason="nothing_to_do", sid=sid_prefix)
+        raise HTTPException(400, "aucune zone, page supprimee ou filigrane")
 
     strip_meta = bool(payload.get("strip_meta", True))
 
@@ -370,6 +549,8 @@ async def api_export(payload: dict):
 
     if len(deleted_pages) >= doc.page_count:
         doc.close()
+        log_event("export_rejected", level=logging.WARNING,
+                  reason="all_pages_deleted", sid=sid_prefix)
         raise HTTPException(400, "impossible de supprimer toutes les pages")
 
     for pno, zs in zones_by_page.items():
@@ -441,10 +622,32 @@ async def api_export(payload: dict):
     out = doc.tobytes(garbage=4, deflate=True, clean=True)
     doc.close()
 
+    # la verification porte sur le PDF tel qu'exporte, AVANT le filigrane: un
+    # filigrane diagonal traverse forcement les zones redigees, et le signaler
+    # comme fuite noierait les vraies fuites sous du bruit garanti sur chaque
+    # page. Filtrer les fuites qui "ressemblent" au filigrane serait pire:
+    # une vraie fuite dont le texte coincide avec le filigrane passerait
+    # alors inapercue. Donc: on verifie d'abord, on tamponne ensuite.
     leaks = _verify(out, zones_by_page, page_map)
+    if watermark:
+        out = _apply_watermark(out, watermark)
 
     base = os.path.splitext(entry["name"])[0] or "document"
     key = _put(f"{base}_redacted.pdf", out)
+
+    # Regle de confidentialite: les entrees de fuite de _verify() contiennent
+    # du texte litteralement extrait du document (les mots que l'utilisateur
+    # cherchait justement a effacer), et le filigrane est du texte libre saisi
+    # par l'operateur. On ne journalise donc que leur nombre / leur presence,
+    # jamais leur contenu — ne pas "ameliorer" ceci en y ajoutant le texte.
+    log_event(
+        "export", sid=sid_prefix,
+        zones=sum(len(zs) for zs in zones_by_page.values()),
+        pages_deleted=len(deleted_pages), watermark=bool(watermark),
+        strip_meta=strip_meta, leaks=len(leaks), out_bytes=len(out),
+        ms=round((time.perf_counter() - start) * 1000),
+    )
+
     return JSONResponse({
         "download": f"/api/download/{key}",
         "filename": f"{base}_redacted.pdf",
@@ -468,5 +671,7 @@ def api_download(key: str):
 
 
 @app.get("/", response_class=HTMLResponse)
-def index():
+def index(request: Request):
+    ua = request.headers.get("user-agent", "")[:UA_MAX_LEN]
+    log_event("connect", **_log_ip_fields(request), ua=ua)
     return (PACKAGE_DIR / "templates" / "index.html").read_text(encoding="utf-8")

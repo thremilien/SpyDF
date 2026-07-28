@@ -108,6 +108,21 @@ header {
 .check { display: flex; align-items: center; gap: 6px; user-select: none; color: var(--ink-soft); font-size: 13px; cursor: pointer; }
 .check input { accent-color: var(--accent); }
 
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+.wm-field { display: flex; align-items: center; }
+.wm-field input {
+  width: 150px; padding: 6px 10px; font: inherit; font-size: 13px;
+  color: var(--ink); background: var(--paper);
+  border: 1px solid var(--line); border-radius: 7px;
+}
+.wm-field input::placeholder { color: var(--ink-faint); }
+.wm-field input:hover { border-color: #c9d0cb; }
+.wm-field input:focus { border-color: var(--accent); }
+
 /* ---------- workspace: le document à gauche, ce qu'il cache à droite ---------- */
 #workspace { flex: 1; min-height: 0; display: flex; }
 #workspace > * { min-width: 0; min-height: 0; }
@@ -191,6 +206,11 @@ header {
 }
 
 /* ---------- zones ---------- */
+.wm-preview {
+  fill: #808080; fill-opacity: .22; pointer-events: none;
+  user-select: none; font-family: Helvetica, Arial, sans-serif;
+}
+
 .zone { opacity: .92; cursor: move; fill: #fff; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
 .zone-delete { stroke: var(--accent); }
 .zone-pixelate { stroke: var(--teal); filter: url(#mosaic); }

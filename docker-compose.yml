@@ -6,6 +6,9 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 8765
+      # SPYDF_LOG_LEVEL: INFO
+      # SPYDF_LOG_FILE: /var/log/spydf.log
+      # SPYDF_LOG_FILENAMES: "1"   # opt-in: journalise le nom des fichiers deposes
     ports:
       - "8765:8765"
     restart: unless-stopped

@@ -357,6 +357,42 @@ function zoneLabel(z, i, idx) {
   return `Zone ${idx + 1}, page ${i + 1}, ${modeLabel(z.mode)}`;
 }
 
+// Aperçu du filigrane: même diagonale (coin bas-gauche -> coin haut-droit)
+// et même échelle relative que le tampon posé par _apply_watermark côté
+// serveur, sans viser le pixel près — juste ne pas mentir sur le résultat.
+const WM_DIAGONAL_RATIO = 0.78;
+const WM_MIN_SIZE = 8, WM_MAX_SIZE = 200;
+
+function watermarkValue() { return $('wm').value.trim(); }
+
+function drawWatermarkPreview(svg, i) {
+  const text = watermarkValue();
+  if (!text) return;
+  const p = pages[i];
+  if (!p) return;
+
+  const cx = p.x0 + p.w / 2, cy = p.y0 + p.h / 2;
+  const diag = Math.hypot(p.w, p.h);
+  const angleDeg = Math.atan2(p.h, p.w) * 180 / Math.PI;
+
+  const t = document.createElementNS(svg.namespaceURI, 'text');
+  t.setAttribute('class', 'wm-preview');
+  t.setAttribute('x', cx);
+  t.setAttribute('y', cy);
+  t.setAttribute('text-anchor', 'middle');
+  t.setAttribute('dominant-baseline', 'middle');
+  t.setAttribute('font-size', '40');
+  t.textContent = text;   // jamais innerHTML: le filigrane vient de l'utilisateur
+  svg.appendChild(t);
+
+  let width = 0;
+  try { width = t.getComputedTextLength(); } catch { /* mesure indisponible */ }
+  if (!width) width = text.length * 40 * 0.55;   // repli grossier
+  const fontSize = Math.max(WM_MIN_SIZE, Math.min(WM_MAX_SIZE, diag * WM_DIAGONAL_RATIO / width * 40));
+  t.setAttribute('font-size', fontSize);
+  t.setAttribute('transform', `rotate(${angleDeg} ${cx} ${cy})`);
+}
+
 function renderZones(i) {
   const pe = pageEls[i];
   if (!pe) return;
@@ -395,6 +431,8 @@ function renderZones(i) {
     svg.appendChild(poly);
     if (isSel) renderHandles(svg, i, idx, z);
   });
+
+  drawWatermarkPreview(svg, i);
 
   // le re-rendu détruit l'élément focalisé: on lui rend le focus
   if (selEl && keyboardNav && !menu.contains(document.activeElement)) {
@@ -803,7 +841,7 @@ function syncButtons() {
   $('undo').disabled = busy || history.length === 0;
   $('redo').disabled = busy || redoStack.length === 0;
   $('clear').disabled = busy || !n;
-  $('export').disabled = busy || !(total || deletedPages.size);
+  $('export').disabled = busy || !(total || deletedPages.size || watermarkValue());
 }
 
 function updateStatus() {
@@ -825,7 +863,10 @@ $('export').onclick = async () => {
   try {
     const r = await fetch('/api/export', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sid, zones, strip_meta: $('meta').checked, deleted_pages: [...deletedPages] })
+      body: JSON.stringify({
+        sid, zones, strip_meta: $('meta').checked, deleted_pages: [...deletedPages],
+        watermark: $('wm').value,
+      })
     });
     if (!r.ok) {
       const msg = await r.text().catch(() => '');
@@ -849,6 +890,16 @@ $('export').onclick = async () => {
     setStatus('Erreur : ' + (err.message || 'serveur injoignable'), 'warn');
   }
 };
+
+// aperçu et bouton Exporter suivent la saisie du filigrane en direct. Le
+// bouton réagit à la frappe, l'aperçu attend une pause: redessiner toutes les
+// pages à chaque touche saccade la saisie sur un document un peu long.
+let wmTimer = null;
+$('wm').addEventListener('input', () => {
+  updateStatus();
+  clearTimeout(wmTimer);
+  wmTimer = setTimeout(renderAll, 120);
+});
 
 setTool('rect');
 setDefaultMode('delete');

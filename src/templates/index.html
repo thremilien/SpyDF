@@ -94,6 +94,13 @@
   <label class="check" title="Métadonnées, XMP, signets, pièces jointes, JavaScript, liens et champs de formulaire">
     <input type="checkbox" id="meta" checked><span>Effacer les traces du document</span>
   </label>
+
+  <label class="wm-field" for="wm">
+    <span class="sr-only">Filigrane à apposer sur chaque page exportée</span>
+    <input type="text" id="wm" maxlength="80" placeholder="Filigrane (optionnel)"
+           title="Texte tamponné en diagonale sur chaque page de l'export, par exemple « COPIE »">
+  </label>
+
   <button id="export" class="btn primary" disabled>
     Exporter
     <svg viewBox="0 0 18 18" fill="none"><path d="M9 2.5v8M9 10.5l-3-3.2M9 10.5l3-3.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M3.5 12.5V14a1 1 0 001 1h9a1 1 0 001-1v-1.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
@@ -133,6 +140,7 @@
       <li>Au clavier : <b>Tab</b> passe d'une zone à l'autre, <b>Entrée</b> ouvre son menu, <b>Suppr</b> l'efface.</li>
       <li>Ce qui disparaît suit le <b>contour dessiné</b>, y compris pour un polygone ou un tracé libre : rien n'est effacé ni recouvert en dehors.</li>
       <li><b>Supprimer</b> efface le contenu ; <b>Repixeliser</b> n'en laisse qu'une mosaïque illisible.</li>
+      <li>Un <b>filigrane</b> (texte tapé dans le champ à côté d'Exporter) est tamponné en diagonale sur chaque page exportée ; son aperçu apparaît directement sur les pages pendant la saisie.</li>
     </ul>
   </div>
 </div>

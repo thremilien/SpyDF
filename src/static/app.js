@@ -361,7 +361,12 @@ function zoneLabel(z, i, idx) {
 // et même échelle relative que le tampon posé par _apply_watermark côté
 // serveur, sans viser le pixel près — juste ne pas mentir sur le résultat.
 const WM_DIAGONAL_RATIO = 0.78;
-const WM_MIN_SIZE = 8, WM_MAX_SIZE = 200;
+const WM_MIN_SIZE = 8;
+// hauteur d'une ligne en multiples de la taille de police (métriques de
+// Helvetica : ascendantes 0.718, descendantes 0.207). Pas de taille maximale
+// en unités PDF : elle rendrait l'aperçu dépendant de l'échelle de la page.
+const WM_LINE_HEIGHT = 0.925;
+const WM_PROBE_SIZE = 40;
 
 function watermarkValue() { return $('wm').value.trim(); }
 
@@ -381,14 +386,20 @@ function drawWatermarkPreview(svg, i) {
   t.setAttribute('y', cy);
   t.setAttribute('text-anchor', 'middle');
   t.setAttribute('dominant-baseline', 'middle');
-  t.setAttribute('font-size', '40');
+  t.setAttribute('font-size', WM_PROBE_SIZE);
   t.textContent = text;   // jamais innerHTML: le filigrane vient de l'utilisateur
   svg.appendChild(t);
 
-  let width = 0;
-  try { width = t.getComputedTextLength(); } catch { /* mesure indisponible */ }
-  if (!width) width = text.length * 40 * 0.55;   // repli grossier
-  const fontSize = Math.max(WM_MIN_SIZE, Math.min(WM_MAX_SIZE, diag * WM_DIAGONAL_RATIO / width * 40));
+  let probe = 0;
+  try { probe = t.getComputedTextLength(); } catch { /* mesure indisponible */ }
+  if (!probe) probe = text.length * WM_PROBE_SIZE * 0.55;   // repli grossier
+  const w0 = probe / WM_PROBE_SIZE;   // largeur du texte à la taille 1
+
+  // même garde-fou géométrique que _watermark_fit_size côté serveur: la boîte
+  // du texte, pivotée de l'angle de la diagonale, doit tenir dans la page.
+  const fit = diag / Math.max(w0 + WM_LINE_HEIGHT * p.h / p.w,
+                              w0 + WM_LINE_HEIGHT * p.w / p.h) * 0.97;
+  const fontSize = Math.min(Math.max(Math.min(diag * WM_DIAGONAL_RATIO / w0, fit), WM_MIN_SIZE), fit);
   t.setAttribute('font-size', fontSize);
   t.setAttribute('transform', `rotate(${angleDeg} ${cx} ${cy})`);
 }

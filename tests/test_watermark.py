@@ -6,6 +6,8 @@ filigrane, sinon le trait diagonal du filigrane serait signale comme une
 fuite sur chaque page. Voir le commentaire dans `src/app.py`.
 """
 
+import math
+
 import fitz
 import pytest
 from fastapi.testclient import TestClient
@@ -215,3 +217,31 @@ def test_typographic_characters_are_folded_to_latin1(client):
         chk.close()
     assert "COPIE - NE PAS DIFFUSER" in text
     assert "·" not in text and "—" not in text
+
+
+def test_watermark_size_does_not_depend_on_the_page_scale(client):
+    """Meme page, meme filigrane, deux echelles de MediaBox: un scan dont la
+    boite est en pixels (2480x3508) doit recevoir le meme filigrane, en
+    proportion, qu'un A4 en points (595x842). Un plafond de taille de police
+    en valeur absolue faisait retomber le second a 14 % de la diagonale."""
+    def span(width, height):
+        doc = fitz.open()
+        doc.new_page(width=width, height=height)
+        data = doc.tobytes()
+        doc.close()
+        sid = open_doc(client, data)
+        _, out = export(client, sid, watermark="COPIE")
+        chk = fitz.open(stream=out, filetype="pdf")
+        try:
+            page = chk[0]
+            hits = page.search_for("COPIE")
+            assert hits, "filigrane absent"
+            box = hits[0]
+            # la diagonale du texte pivote, rapportee a celle de la page
+            return math.hypot(box.width, box.height) / math.hypot(width, height)
+        finally:
+            chk.close()
+
+    a4 = span(595, 842)
+    scan = span(2480, 3508)
+    assert a4 == pytest.approx(scan, rel=0.02), f"A4 {a4:.3f} vs scan {scan:.3f}"

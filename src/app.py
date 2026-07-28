@@ -33,9 +33,14 @@ MAX_SESSIONS = 32
 
 WATERMARK_MAX_LEN = 80
 WATERMARK_MIN_SIZE = 8
-WATERMARK_MAX_SIZE = 200
 WATERMARK_DIAGONAL_RATIO = 0.78   # part de la diagonale que doit occuper le texte
 WATERMARK_FONT = "helv"           # police base-14, aucun fichier a embarquer
+# pas de plafond absolu sur la taille de police: le point PDF n'a pas de
+# taille fixe a l'ecran, et une page peut mesurer 595 points (A4) comme 2480
+# (un scan dont la MediaBox est en pixels). Un plafond en points donnerait au
+# meme filigrane 60 % de la diagonale sur la premiere et 14 % sur la seconde.
+# Le seul garde-fou est geometrique (_watermark_fit_size), donc proportionnel
+# a la page: le rendu est alors identique quelle que soit son echelle.
 
 # sur certains systemes .js est devine comme application/javascript, qui ne
 # recoit pas de charset: les accents du JS arrivent alors casses dans l'UI.
@@ -377,6 +382,16 @@ _WATERMARK_FONT_METRICS = fitz.Font(WATERMARK_FONT)
 _WATERMARK_LINE_HEIGHT = _WATERMARK_FONT_METRICS.ascender - _WATERMARK_FONT_METRICS.descender
 
 
+def _watermark_fit_size(w0: float, rect) -> float:
+    """Taille de police maximale pour que la boite du texte, pivotee de l'angle
+    de la diagonale, tienne encore dans la page. `w0` est la largeur du texte a
+    la taille 1. Le resultat est proportionnel a la page: doubler ses
+    dimensions double la taille de police, et le rendu est identique."""
+    denom_w = w0 + _WATERMARK_LINE_HEIGHT * rect.height / rect.width
+    denom_h = w0 + _WATERMARK_LINE_HEIGHT * rect.width / rect.height
+    return math.hypot(rect.width, rect.height) / max(denom_w, denom_h) * 0.97
+
+
 def _apply_watermark(data: bytes, text: str) -> bytes:
     """Tamponne `text` en diagonal sur chaque page, du coin bas-gauche vers le
     coin haut-droit. Toute erreur ici ne doit pas faire echouer l'export: un
@@ -412,15 +427,15 @@ def _apply_watermark(data: bytes, text: str) -> bytes:
                 # fois la boite (largeur x hauteur) pivotee de l'angle de la
                 # diagonale, elle peut deborder du rectangle de la page - a
                 # fortiori sur une page etroite ou avec un texte tres court,
-                # qui pousse la police vers son plafond. On borne donc aussi
-                # la taille de police a ce que la boite pivotee tient dans la
-                # page, quitte a rester en-dessous du ratio vise ci-dessus.
-                denom_w = w0 + _WATERMARK_LINE_HEIGHT * rect.height / rect.width
-                denom_h = w0 + _WATERMARK_LINE_HEIGHT * rect.width / rect.height
-                fit_cap = diag / max(denom_w, denom_h) * 0.97
+                # qui reclame une police enorme. On borne donc la taille a ce
+                # que la boite pivotee tient dans la page, quitte a rester
+                # en-dessous du ratio vise ci-dessus.
+                fit_cap = _watermark_fit_size(w0, rect)
                 fontsize = min(fontsize, fit_cap)
 
-                fontsize = max(WATERMARK_MIN_SIZE, min(WATERMARK_MAX_SIZE, fontsize))
+                # le plancher ne doit pas rouvrir la porte au debordement:
+                # sur une page minuscule, tenir dans la page prime.
+                fontsize = min(max(fontsize, WATERMARK_MIN_SIZE), fit_cap)
 
                 tl = fitz.get_text_length(stamp, fontname=WATERMARK_FONT, fontsize=fontsize)
                 # centre le texte (largeur + hauteur typographique) sur le

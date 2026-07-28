@@ -47,37 +47,51 @@ from the output bytes).
   `Content-Disposition` filename sanitised, `no-store` and `nosniff` on the
   download response.
 
+## Done — UI
+
+- **Non-rectangular zones delete more than they show.** Redaction runs on the
+  *bounding box* of the shape while the white cover follows the exact outline.
+  Drawing a triangle over a name also destroyed unrelated text that sat
+  outside the triangle but inside its bounding box (verified: `"reponse
+  importante"` came back as `"portante"`). Fail-safe, but unpredictable. The
+  bounding box is now drawn as a dashed rectangle, while the zone is being
+  traced *and* once it is placed, so the extent of the deletion is visible.
+  The behaviour itself is unchanged and is now pinned by a test.
+- **`redoStack` was not reset when a new file was opened**, so Ctrl+Y after
+  opening a second document pasted zones from the previous one onto it.
+- **No redo button** — added next to undo.
+- **Export was not guarded against double-clicks**; the button now goes
+  disabled for the duration of the request.
+- **No error handling around the export/open fetches.** Both now report the
+  failure in the status bar instead of leaving it stuck on "Traitement…".
+- **No progress feedback when opening a large PDF.** Upload percentage (via
+  XHR — `fetch` cannot report upload progress), then a busy state held until
+  the first page has actually rendered, plus an indeterminate progress bar.
+- **Touch devices could not draw at all.** All handlers are pointer events
+  now. The page layer keeps `touch-action: pan-y`, so a vertical drag still
+  scrolls the document and a gesture started sideways draws; `pointercancel`
+  aborts a trace the browser takes back.
+- **The zone context menu was keyboard-inaccessible.** Zones are focusable,
+  Enter / ContextMenu / Shift+F10 opens the menu, arrows move within it,
+  Escape closes it and returns focus to the zone.
+
+## Done — other
+
+- **Test suite** (`uv run pytest`). Builds a PDF carrying one of each trace
+  class, exports it through the real routes, and asserts no marker survives in
+  the raw bytes or any decompressed stream. Also covers page deletion with
+  zone remapping, the pixelate path, the bounding-box behaviour, and `_verify`.
+- **`README.md`** rewritten: shapes, modes, page deletion, document scrubbing,
+  the verification pass, keyboard shortcuts, and how to run the tests.
+
 ## Open — UI
 
-- [ ] **Non-rectangular zones delete more than they show.** Redaction runs on
-      the *bounding box* of the shape while the white cover follows the exact
-      outline. Drawing a triangle over a name also destroyed unrelated text
-      that sat outside the triangle but inside its bounding box (verified:
-      `"reponse importante"` came back as `"portante"`). This is fail-safe —
-      it over-deletes, never under-deletes — but it is unpredictable for the
-      user. Fix by drawing the bounding rectangle while a polygon/freehand
-      zone is being drawn, so what you see is what gets removed.
-- [ ] **`redoStack` is not reset when a new file is opened.** `openFile()`
-      clears `zones` and `history` but not `redoStack`, so Ctrl+Y after
-      opening a second document pastes zones from the previous one onto it.
-- [ ] **No redo button.** Redo exists only via Ctrl+Y / Ctrl+Shift+Z; the
-      toolbar has undo but no counterpart.
-- [ ] **Export is not guarded against double-clicks.** The button stays
-      enabled during the request, so a second click exports twice.
-- [ ] **No error handling around the export/open fetches.** If the server is
-      unreachable the promise rejects unhandled and the status bar stays stuck
-      on "Traitement…".
-- [ ] **No progress feedback when opening a large PDF.** The upload and first
-      render can take seconds with no indication anything is happening.
-- [ ] **Touch devices cannot draw at all.** Every handler is `mousedown` /
-      `mousemove` / `mouseup`; there are no pointer or touch events.
-- [ ] **The zone context menu is keyboard-inaccessible.** It only opens on
-      right-click, so mode switching and zone deletion are mouse-only.
-
-## Open — other
-
-- [ ] No test suite. The review scripts that found the leaks above are worth
-      keeping as regression tests: build a PDF containing each trace type,
-      export it, assert none of the markers survive in the output bytes.
-- [ ] `README.md` still says the tool draws *rectangles* only, and does not
-      mention pixelate mode or page deletion.
+- [ ] **Touch drawing is discoverable only from the help popup.** `pan-y`
+      means a zone has to be started with a sideways movement. An explicit
+      "naviguer / dessiner" toggle, shown only for coarse pointers, would be
+      less of a trick to explain.
+- [ ] **Inspector panel.** Show the rendered PDF on the left and, on the
+      right, a plain sheet listing everything the document carries that the
+      reader cannot see in a browser: indexed text, metadata, XMP, bookmarks,
+      annotations, form fields, attachments, layers, links, JavaScript. The
+      point is to make the invisible payload reviewable before exporting.

@@ -1,24 +1,24 @@
 const $ = id => document.getElementById(id);
 
 // zones[page] = [{type:'rect'|'polygon'|'freehand', points:[[x,y],...], mode:'delete'|'pixelate'}]
-// Les points sont en coordonnées PDF.
+// Points are in PDF coordinates.
 let sid = null, pages = [], zones = {};
 let tool = 'rect';
 let defaultMode = 'delete';
 let activePage = 0;
 let selected = null;      // {page, index}
-let pending = null;       // polygone en cours de tracé
+let pending = null;       // polygon currently being drawn
 let deletedPages = new Set();
-let history = [];         // instantanés JSON pour l'annulation
+let history = [];         // JSON snapshots, for undo
 let redoStack = [];
-let busy = false;         // une requête réseau est en cours
-let keyboardNav = false;  // la sélection vient du clavier: on lui rend le focus
+let busy = false;         // a network request is in flight
+let keyboardNav = false;  // selection came from the keyboard: give it the focus back
 const pageEls = [];
 
 const pagesEl = $('pages'), menu = $('zoneMenu');
 
-// Points d'accroche du panneau d'inspection (inspector.js, charge ensuite).
-// Definis ici en no-op pour que l'application reste autonome sans lui.
+// Hooks for the inspector pane (inspector.js, loaded after this file). Defined
+// here as no-ops so the app still works on its own without it.
 let onDocumentOpened = () => {};
 let onZonesChanged = () => {};
 let onActivePageChanged = () => {};
@@ -26,7 +26,7 @@ let onActivePageChanged = () => {};
 const ICON_TRASH = '<svg viewBox="0 0 18 18" fill="none"><path d="M4 5.5h10M7.5 5.5V4a1 1 0 011-1h1a1 1 0 011 1v1.5M5.5 5.5l.6 8a1 1 0 001 .9h3.8a1 1 0 001-.9l.6-8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_RESTORE = '<svg viewBox="0 0 18 18" fill="none"><path d="M4 8h7a3.5 3.5 0 010 7H8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M6.5 5L4 8l2.5 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
-// poignées de redimensionnement: [nom, ratio x, ratio y, curseur]
+// resize handles: [name, x ratio, y ratio, cursor]
 const BOX_HANDLES = [
   ['nw', 0, 0, 'nwse-resize'], ['n', .5, 0, 'ns-resize'], ['ne', 1, 0, 'nesw-resize'],
   ['e', 1, .5, 'ew-resize'], ['se', 1, 1, 'nwse-resize'], ['s', .5, 1, 'ns-resize'],
@@ -34,9 +34,9 @@ const BOX_HANDLES = [
 ];
 const CORNER_HANDLES = BOX_HANDLES.filter(h => h[0].length === 2);
 
-// ---------- barre d'état ----------
-// Un seul point d'entrée: les messages transitoires (progression, erreur,
-// résultat d'export) ne doivent pas être écrasés par le résumé des zones.
+// ---------- status bar ----------
+// A single entry point: transient messages (progress, error, export result)
+// must not be overwritten by the zone summary.
 function setStatus(text, cls) {
   const el = $('status');
   el.textContent = '';
@@ -55,10 +55,10 @@ function setBusy(on, text) {
   syncButtons();
 }
 
-// ---------- historique ----------
-// Instantanés complets: tout passe par pushHistory() AVANT mutation, donc
-// tracé, déplacement, redimensionnement, mode, suppression de zone ou de page
-// sont tous annulables de la même façon.
+// ---------- history ----------
+// Full snapshots: everything calls pushHistory() BEFORE mutating, so drawing,
+// moving, resizing, mode changes and zone or page deletion are all undone the
+// same way.
 function snapshot() { return JSON.stringify({ z: zones, d: [...deletedPages] }); }
 function restore(s) {
   const d = JSON.parse(s);
@@ -69,10 +69,10 @@ function restore(s) {
 function pushHistory() {
   history.push(snapshot());
   if (history.length > 200) history.shift();
-  redoStack.length = 0;   // une nouvelle action invalide le redo
+  redoStack.length = 0;   // a new action invalidates the redo stack
 }
-// Renvoie une fonction qui n'enregistre l'état qu'au premier appel réel:
-// évite de polluer l'historique quand un clic ne déplace rien.
+// Returns a function that snapshots only on its first real call: keeps a click
+// that moves nothing out of the history.
 function onceHistory() {
   let done = false;
   return () => { if (!done) { done = true; pushHistory(); } };
@@ -90,9 +90,9 @@ function redo() {
   restore(redoStack.pop());
 }
 
-// ---------- ouverture ----------
-// fetch() ne sait pas rapporter la progression d'un envoi: sur un PDF de
-// plusieurs dizaines de Mo l'interface resterait muette pendant tout l'upload.
+// ---------- opening ----------
+// fetch() cannot report upload progress: on a PDF of several dozen MB the UI
+// would stay silent for the whole upload.
 function uploadPdf(f, onProgress) {
   return new Promise((resolve, reject) => {
     const fd = new FormData();
@@ -106,13 +106,13 @@ function uploadPdf(f, onProgress) {
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         try { resolve(JSON.parse(xhr.responseText)); }
-        catch { reject(new Error('réponse illisible du serveur')); }
+        catch { reject(new Error('unreadable response from the server')); }
       } else {
-        reject(new Error(xhr.responseText || `erreur ${xhr.status}`));
+        reject(new Error(xhr.responseText || `error ${xhr.status}`));
       }
     };
-    xhr.onerror = () => reject(new Error('serveur injoignable'));
-    xhr.onabort = () => reject(new Error('envoi interrompu'));
+    xhr.onerror = () => reject(new Error('server unreachable'));
+    xhr.onabort = () => reject(new Error('upload interrupted'));
     xhr.send(fd);
   });
 }
@@ -121,39 +121,39 @@ async function openFile(f) {
   if (!f) return;
   if (busy) return;
   if (f.type !== 'application/pdf' && !f.name.toLowerCase().endsWith('.pdf')) {
-    setStatus("Ce fichier n'est pas un PDF.", 'warn');
+    setStatus('This file is not a PDF.', 'warn');
     return;
   }
-  setBusy(true, `Envoi de « ${f.name} »…`);
+  setBusy(true, `Uploading "${f.name}"…`);
   let d;
   try {
     d = await uploadPdf(f, ratio => {
       setStatus(ratio < 1
-        ? `Envoi de « ${f.name} » — ${Math.round(ratio * 100)} %`
-        : 'Analyse du document…', 'busy-text');
+        ? `Uploading "${f.name}" — ${Math.round(ratio * 100)}%`
+        : 'Analysing the document…', 'busy-text');
     });
   } catch (err) {
     setBusy(false);
-    setStatus('Erreur : ' + err.message, 'warn');
+    setStatus('Error: ' + err.message, 'warn');
     updateStatus();
     return;
   }
 
   sid = d.sid; pages = d.pages;
-  // redoStack faisait autrefois partie de l'oubli: Ctrl+Y recollait alors des
-  // zones du document précédent sur le nouveau.
+  // redoStack used to be left out of this reset, so Ctrl+Y pasted zones from
+  // the previous document onto the new one.
   zones = {}; history = []; redoStack = [];
   activePage = 0; selected = null; deletedPages = new Set();
   cancelPending();
   $('drop').hidden = true; pagesEl.hidden = false;
-  setStatus(`Rendu de la page 1 sur ${pages.length}…`, 'busy-text');
+  setStatus(`Rendering page 1 of ${pages.length}…`, 'busy-text');
   buildPages();
   onDocumentOpened(sid);
   awaitFirstPage();
 }
 
-// La première image peut mettre plusieurs secondes: on ne rend la main
-// (et la barre d'état) qu'une fois la page réellement affichée.
+// The first image can take seconds: hand control back (and free the status
+// bar) only once the page is actually on screen.
 function awaitFirstPage() {
   const pe = pageEls[0];
   if (!pe) { setBusy(false); updateStatus(); return; }
@@ -165,7 +165,7 @@ function awaitFirstPage() {
     setBusy(false);
     updateStatus();
   };
-  const timer = setTimeout(finish, 15000);   // filet de sécurité
+  const timer = setTimeout(finish, 15000);   // safety net
   pe.img.addEventListener('load', finish, { once: true });
   pe.img.addEventListener('error', finish, { once: true });
   if (pe.img.complete && pe.img.naturalWidth) finish();
@@ -195,15 +195,15 @@ stageEl.addEventListener('drop', e => {
   if (f) openFile(f);
 });
 
-// la zone de dépôt ouvre aussi le sélecteur de fichier: c'est la première
-// chose qu'on voit, et rien n'y indiquait qu'il fallait viser la barre du
-// haut. Elle est masquée dès qu'un document est ouvert.
+// The drop zone opens the file picker too: it is the first thing you see, and
+// nothing on it pointed to the button in the top bar. It is hidden as soon as a
+// document is open.
 $('drop').addEventListener('click', () => { if (!busy) $('file').click(); });
 $('drop').addEventListener('keydown', e => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('drop').click(); }
 });
 
-// ---------- construction des pages ----------
+// ---------- building the pages ----------
 function buildPages() {
   pagesEl.innerHTML = '';
   pageEls.length = 0;
@@ -228,13 +228,13 @@ function buildPages() {
 
     const badge = document.createElement('div');
     badge.className = 'page-deleted-badge';
-    badge.innerHTML = '<span>Page supprimée</span>';
+    badge.innerHTML = '<span>Page deleted</span>';
 
     const delBtn = document.createElement('button');
     delBtn.className = 'page-del-btn';
     delBtn.type = 'button';
     delBtn.innerHTML = ICON_TRASH;
-    delBtn.title = 'Supprimer cette page';
+    delBtn.title = 'Delete this page';
     delBtn.onclick = ev => { ev.stopPropagation(); togglePageDeleted(i); };
 
     cont.append(img, svg, badge, tab, delBtn);
@@ -262,7 +262,7 @@ function syncDeletedUI() {
     pe.container.classList.toggle('deleted', del);
     pe.delBtn.classList.toggle('is-deleted', del);
     pe.delBtn.innerHTML = del ? ICON_RESTORE : ICON_TRASH;
-    pe.delBtn.title = del ? 'Restaurer cette page' : 'Supprimer cette page';
+    pe.delBtn.title = del ? 'Restore this page' : 'Delete this page';
   });
 }
 
@@ -280,7 +280,7 @@ const activeObserver = new IntersectionObserver(entries => {
   });
 }, { threshold: [0.5] });
 
-// Largeur de rendu = pixels écran réellement occupés par la page.
+// Render width = the screen pixels the page actually occupies.
 function wantedWidth(pe) {
   const css = pe.container.clientWidth || 880;
   return Math.round(css * (window.devicePixelRatio || 1));
@@ -290,14 +290,14 @@ function loadPage(i) {
   const pe = pageEls[i];
   if (!pe) return;
   const w = wantedWidth(pe);
-  // on ne recharge que si l'on gagne vraiment en netteté
+  // only reload when it actually buys sharpness
   if (pe.loaded && w <= pe.renderedAt * 1.15) return;
   pe.loaded = true;
   pe.renderedAt = w;
   pe.img.src = `/api/page/${sid}/${i}?w=${w}`;
 }
 
-// si la fenêtre s'élargit, on redemande les pages visibles en plus net
+// when the window widens, re-request the visible pages at a higher resolution
 let reflowTimer = null;
 window.addEventListener('resize', () => {
   if (!sid) return;
@@ -309,14 +309,14 @@ window.addEventListener('resize', () => {
   }, 250);
 });
 
-// ---------- géométrie ----------
+// ---------- geometry ----------
 function toSvgPoint(svg, clientX, clientY) {
   const pt = svg.createSVGPoint();
   pt.x = clientX; pt.y = clientY;
   const p = pt.matrixTransform(svg.getScreenCTM().inverse());
   return [p.x, p.y];
 }
-// Le viewBox est étiré (preserveAspectRatio=none): l'échelle diffère en x et y.
+// The viewBox is stretched (preserveAspectRatio=none): x and y scales differ.
 function unitScale(svg) {
   const m = svg.getScreenCTM();
   return { ux: 1 / (m.a || 1), uy: 1 / (m.d || 1) };
@@ -338,8 +338,8 @@ function edgesFrom(name, bb, p) {
   return [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)];
 }
 
-// `pointercancel` arrive quand le navigateur reprend la main sur le geste en
-// cours: le tracé doit alors être abandonné plutôt que validé à moitié.
+// `pointercancel` fires when the browser takes the gesture over: the drawing
+// has to be dropped rather than half-committed.
 function startDrag(ev, onMove, onEnd) {
   const id = ev.pointerId;
   const move = e => { if (e.pointerId === id) onMove(e); };
@@ -356,23 +356,23 @@ function startDrag(ev, onMove, onEnd) {
   window.addEventListener('pointercancel', cancel);
 }
 
-// ---------- rendu des zones ----------
+// ---------- rendering the zones ----------
 function renderAll() { pageEls.forEach((_, i) => renderZones(i)); }
 
-function modeLabel(mode) { return mode === 'pixelate' ? 'repixelisation' : 'suppression'; }
+function modeLabel(mode) { return mode === 'pixelate' ? 'pixelate' : 'delete'; }
 
 function zoneLabel(z, i, idx) {
   return `Zone ${idx + 1}, page ${i + 1}, ${modeLabel(z.mode)}`;
 }
 
-// Aperçu du filigrane: même diagonale (coin bas-gauche -> coin haut-droit)
-// et même échelle relative que le tampon posé par _apply_watermark côté
-// serveur, sans viser le pixel près — juste ne pas mentir sur le résultat.
+// Watermark preview: same diagonal (bottom-left -> top-right) and same relative
+// scale as the stamp _apply_watermark lays down server-side. Not pixel-exact —
+// it just must not lie about the result.
 const WM_DIAGONAL_RATIO = 0.78;
 const WM_MIN_SIZE = 8;
-// hauteur d'une ligne en multiples de la taille de police (métriques de
-// Helvetica : ascendantes 0.718, descendantes 0.207). Pas de taille maximale
-// en unités PDF : elle rendrait l'aperçu dépendant de l'échelle de la page.
+// line height in multiples of the font size (Helvetica metrics: ascender 0.718,
+// descender 0.207). No maximum size in PDF units: it would make the preview
+// depend on the scale of the page.
 const WM_LINE_HEIGHT = 0.925;
 const WM_PROBE_SIZE = 40;
 
@@ -395,16 +395,16 @@ function drawWatermarkPreview(svg, i) {
   t.setAttribute('text-anchor', 'middle');
   t.setAttribute('dominant-baseline', 'middle');
   t.setAttribute('font-size', WM_PROBE_SIZE);
-  t.textContent = text;   // jamais innerHTML: le filigrane vient de l'utilisateur
+  t.textContent = text;   // never innerHTML: the watermark comes from the user
   svg.appendChild(t);
 
   let probe = 0;
   try { probe = t.getComputedTextLength(); } catch { /* mesure indisponible */ }
-  if (!probe) probe = text.length * WM_PROBE_SIZE * 0.55;   // repli grossier
-  const w0 = probe / WM_PROBE_SIZE;   // largeur du texte à la taille 1
+  if (!probe) probe = text.length * WM_PROBE_SIZE * 0.55;   // rough fallback
+  const w0 = probe / WM_PROBE_SIZE;   // text width at size 1
 
-  // même garde-fou géométrique que _watermark_fit_size côté serveur: la boîte
-  // du texte, pivotée de l'angle de la diagonale, doit tenir dans la page.
+  // same geometric guard as _watermark_fit_size server-side: the text box,
+  // rotated by the diagonal's angle, has to fit inside the page.
   const fit = diag / Math.max(w0 + WM_LINE_HEIGHT * p.h / p.w,
                               w0 + WM_LINE_HEIGHT * p.w / p.h) * 0.97;
   const fontSize = Math.min(Math.max(Math.min(diag * WM_DIAGONAL_RATIO / w0, fit), WM_MIN_SIZE), fit);
@@ -453,7 +453,7 @@ function renderZones(i) {
 
   drawWatermarkPreview(svg, i);
 
-  // le re-rendu détruit l'élément focalisé: on lui rend le focus
+  // re-rendering destroys the focused element: give it the focus back
   if (selEl && keyboardNav && !menu.contains(document.activeElement)) {
     selEl.focus({ preventScroll: true });
   }
@@ -472,8 +472,8 @@ function selectedEl() {
   return pe ? pe.svg.querySelector(`.zone[data-idx="${selected.index}"]`) : null;
 }
 
-// Le menu contextuel était la seule voie vers le changement de mode: sans
-// souris (ou sans clic droit) la zone n'était plus modifiable du tout.
+// The context menu used to be the only way to change a zone's mode: without a
+// mouse (or without a right button) the zone could not be edited at all.
 function zoneKeydown(ev, i, idx, z) {
   const k = ev.key;
   if (k === 'Enter' || k === ' ' || k === 'ContextMenu' || (k === 'F10' && ev.shiftKey)) {
@@ -491,7 +491,7 @@ function zoneKeydown(ev, i, idx, z) {
 
 function renderHandles(svg, i, idx, z) {
   const { ux, uy } = unitScale(svg);
-  const hw = 9 * ux, hh = 9 * uy;   // poignées à taille d'écran constante
+  const hw = 9 * ux, hh = 9 * uy;   // handles keep a constant on-screen size
 
   if (z.type === 'polygon') {
     z.points.forEach((pt, vi) => {
@@ -503,7 +503,7 @@ function renderHandles(svg, i, idx, z) {
       c.addEventListener('pointerdown', ev => beginVertexDrag(ev, i, idx, vi));
       c.addEventListener('dblclick', ev => {
         ev.preventDefault(); ev.stopPropagation();
-        if (z.points.length <= 3) return;   // un polygone garde 3 sommets mini
+        if (z.points.length <= 3) return;   // a polygon keeps at least 3 vertices
         pushHistory();
         z.points.splice(vi, 1);
         renderZones(i); updateStatus();
@@ -513,7 +513,7 @@ function renderHandles(svg, i, idx, z) {
     return;
   }
 
-  // rectangle: 8 poignées; tracé libre: seulement les 4 coins
+  // rectangle: 8 handles; freehand: the 4 corners only
   const set = z.type === 'rect' ? BOX_HANDLES : CORNER_HANDLES;
   const bb = bbox(z.points);
   set.forEach(([name, rx, ry, cursor]) => {
@@ -529,7 +529,7 @@ function renderHandles(svg, i, idx, z) {
   });
 }
 
-// ---------- édition: déplacer / redimensionner ----------
+// ---------- editing: move / resize ----------
 function beginZoneDrag(ev, i, idx) {
   if (!ev.isPrimary || ev.button !== 0) return;
   ev.stopPropagation();
@@ -593,7 +593,7 @@ function beginResize(ev, i, idx, name) {
     if (z.type === 'rect') {
       z.points = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
     } else {
-      // tracé libre: on remappe tous les points dans la nouvelle boîte
+      // freehand: remap every point into the new box
       const nw = x1 - x0, nh = y1 - y0;
       z.points = orig.map(([x, y]) => [
         x0 + ((x - bb[0]) / ow) * nw,
@@ -606,7 +606,7 @@ function beginResize(ev, i, idx, name) {
   });
 }
 
-// ---------- tracé ----------
+// ---------- drawing ----------
 function wireLayer(i, svg) {
   svg.addEventListener('pointerdown', e => {
     if (!e.isPrimary || e.button !== 0) return;
@@ -622,7 +622,7 @@ function wireLayer(i, svg) {
   svg.addEventListener('dblclick', e => {
     if (tool !== 'polygon' || !pending || pending.page !== i) return;
     e.preventDefault();
-    // le 2e clic du double-clic a déjà ajouté un sommet en double
+    // the second click of the double-click already added a duplicate vertex
     if (pending.pts.length > 1) pending.pts.pop();
     finishPolygon();
   });
@@ -662,7 +662,7 @@ function startFreehand(i, svg, e) {
   const pts = [toSvgPoint(svg, e.clientX, e.clientY)];
   const line = document.createElementNS(svg.namespaceURI, 'polyline');
   line.setAttribute('class', 'zone-ghost');
-  // témoin de ce qui sera réellement effacé, mis à jour pendant le tracé
+  // shows what will actually be erased, updated as the stroke is drawn
   const hull = document.createElementNS(svg.namespaceURI, 'rect');
   hull.setAttribute('class', 'zone-ghost zone-ghost-hull');
   svg.append(hull, line);
@@ -712,7 +712,7 @@ function cancelPending() {
   pending = null;
 }
 
-// ---------- menu contextuel ----------
+// ---------- context menu ----------
 function showMenu(x, y, z, focusFirst) {
   $('zoneModeDelete').classList.toggle('active', z.mode === 'delete');
   $('zoneModeDelete').setAttribute('aria-checked', z.mode === 'delete');
@@ -725,7 +725,7 @@ function showMenu(x, y, z, focusFirst) {
   if (focusFirst) menuItems()[0].focus();
 }
 
-// ouverture au clavier: le menu s'ancre sous la zone, pas sous le curseur
+// opened from the keyboard: the menu anchors under the zone, not the cursor
 function openMenuOnZone(z) {
   const el = selectedEl();
   if (!el) return;
@@ -785,7 +785,7 @@ document.addEventListener('pointerdown', e => {
   if (!menu.hidden && !menu.contains(e.target)) closeMenu();
 });
 
-// ---------- barre d'outils ----------
+// ---------- toolbar ----------
 function setTool(t) {
   tool = t;
   if (t !== 'polygon') cancelPending();
@@ -824,7 +824,7 @@ window.addEventListener('keydown', e => {
   if (!sid) return;
   const mod = e.ctrlKey || e.metaKey;
   const k = (e.key || '').toLowerCase();
-  // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y — insensible à Maj et Verr.Maj
+  // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y — insensitive to Shift and Caps Lock
   if (mod && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (mod && k === 'y') { e.preventDefault(); redo(); return; }
   if (mod) return;
@@ -837,10 +837,10 @@ window.addEventListener('keydown', e => {
   }
   if ((e.key === 'Delete' || e.key === 'Backspace') && selected) { e.preventDefault(); deleteSelected(); }
 });
-// les poignées ont une taille écran fixe: il faut les redessiner au resize
+// handles have a fixed on-screen size: they must be redrawn on resize
 window.addEventListener('resize', () => { if (selected) renderZones(selected.page); });
 
-// ---------- aide ----------
+// ---------- help ----------
 const help = $('helpPop');
 $('helpBtn').onclick = e => {
   e.stopPropagation();
@@ -868,17 +868,17 @@ function updateStatus() {
   const n = (zones[activePage] || []).length;
   $('pnum').textContent = pages.length ? `${activePage + 1} / ${pages.length}` : '— / —';
   syncButtons();
-  if (busy) return;   // ne pas écraser un message de progression
-  const delTxt = deletedPages.size ? `, ${deletedPages.size} page(s) supprimée(s)` : '';
+  if (busy) return;   // do not overwrite a progress message
+  const delTxt = deletedPages.size ? `, ${deletedPages.size} page(s) deleted` : '';
   setStatus(pages.length
-    ? `${n} zone(s) sur la page active, ${total} au total${delTxt}.`
-    : 'Aucun document.');
+    ? `${n} zone(s) on the active page, ${total} in total${delTxt}.`
+    : 'No document.');
 }
 
 // ---------- export ----------
 $('export').onclick = async () => {
-  if (busy) return;   // le bouton restait actif: un double-clic exportait deux fois
-  setBusy(true, 'Traitement…');
+  if (busy) return;   // the button stayed live: a double-click exported twice
+  setBusy(true, 'Processing…');
   try {
     const r = await fetch('/api/export', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -890,29 +890,29 @@ $('export').onclick = async () => {
     if (!r.ok) {
       const msg = await r.text().catch(() => '');
       setBusy(false);
-      setStatus('Erreur : ' + (msg || `réponse ${r.status}`), 'warn');
+      setStatus('Error: ' + (msg || `response ${r.status}`), 'warn');
       return;
     }
     const d = await r.json();
     const a = document.createElement('a'); a.href = d.download; a.download = d.filename;
     document.body.appendChild(a); a.click(); a.remove();
     setBusy(false);
-    // le contenu des fuites vient du PDF: jamais d'innerHTML avec ça.
+    // leak content comes from the PDF: never innerHTML with it.
     if (d.leak_count) {
-      const detail = d.leaks.map(l => `p${l.page} ${l.kind} « ${l.text} »`).join(', ');
-      setStatus(`Attention : ${d.leak_count} élément(s) subsistent dans les zones (${detail}). Vérifiez le résultat.`, 'warn');
+      const detail = d.leaks.map(l => `p${l.page} ${l.kind} "${l.text}"`).join(', ');
+      setStatus(`Warning: ${d.leak_count} item(s) remain inside the zones (${detail}). Check the result.`, 'warn');
     } else {
-      setStatus('Export terminé, aucun résidu détecté dans les zones.', 'ok');
+      setStatus('Export done, no residue detected inside the zones.', 'ok');
     }
   } catch (err) {
     setBusy(false);
-    setStatus('Erreur : ' + (err.message || 'serveur injoignable'), 'warn');
+    setStatus('Error: ' + (err.message || 'server unreachable'), 'warn');
   }
 };
 
-// aperçu et bouton Exporter suivent la saisie du filigrane en direct. Le
-// bouton réagit à la frappe, l'aperçu attend une pause: redessiner toutes les
-// pages à chaque touche saccade la saisie sur un document un peu long.
+// Preview and Export button follow the watermark field live. The button reacts
+// on every keystroke, the preview waits for a pause: redrawing every page on
+// each key makes typing stutter on a long document.
 let wmTimer = null;
 $('wm').addEventListener('input', () => {
   updateStatus();

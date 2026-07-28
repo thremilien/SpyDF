@@ -46,7 +46,7 @@ header {
 .brand-mark { width: 24px; height: 24px; color: var(--accent); flex: none; }
 .brand-name { font-family: var(--font-display); font-size: 17px; font-weight: 600; letter-spacing: .1px; }
 
-/* ---------- aide (bouton flottant) ---------- */
+/* ---------- help (floating button) ---------- */
 .help-wrap { position: fixed; right: 20px; bottom: 54px; z-index: 60; }
 #helpBtn {
   width: 34px; height: 34px; border-radius: 50%; padding: 0;
@@ -123,7 +123,7 @@ header {
 .wm-field input:hover { border-color: #c9d0cb; }
 .wm-field input:focus { border-color: var(--accent); }
 
-/* ---------- workspace: le document à gauche, ce qu'il cache à droite ---------- */
+/* ---------- workspace: the document on the left, what it hides on the right ---------- */
 #workspace { flex: 1; min-height: 0; display: flex; }
 #workspace > * { min-width: 0; min-height: 0; }
 .view-split #stage, .view-split #inspector { flex: 1 1 50%; }
@@ -132,8 +132,8 @@ header {
 .view-inspect #stage { display: none; }
 .view-inspect #inspector { flex: 1 1 100%; }
 
-/* tant qu'aucun document n'est ouvert, il n'y a rien à inspecter: la zone de
-   dépôt occupe toute la largeur et reste centrée. */
+/* with no document open there is nothing to inspect: the drop zone takes the
+   full width and stays centred. */
 #workspace.no-doc #inspector { display: none; }
 #workspace.no-doc #stage { flex: 1 1 100%; justify-content: center; padding: 16px; }
 
@@ -231,21 +231,21 @@ header {
 .zone-ghost-fill { fill: var(--ink); fill-opacity: .06; }
 .zone-ghost-hull { stroke: var(--ink-faint); stroke-width: 1.1; stroke-dasharray: 3 4; }
 
-/* ---------- inspecteur: les mêmes pages, vidées de tout sauf du caché ------
-   Les pages de droite ont exactement les proportions et l'espacement de celles
-   de gauche (mêmes 28px de haut, mêmes 26px entre deux pages): une position de
-   lecture s'y transpose telle quelle, et un élément s'y lit à sa place réelle.
-   Ce qui n'appartient à aucune page vit dans la colonne #insRail. */
+/* ---------- inspector: the same pages, emptied of all but the hidden ------
+   The pages on the right have exactly the proportions and spacing of those on
+   the left (same 28px at the top, same 26px between pages): a reading position
+   transposes as-is, and an item reads at its real place. What belongs to no
+   page lives in the #insRail column. */
 #inspector {
   position: relative;
   overflow-y: auto; border-left: 1px solid var(--line);
   background: var(--bg);
-  padding: 28px 16px 60px;   /* identiques à ceux de #stage: mêmes pages, même place */
+  padding: 28px 16px 60px;   /* same as #stage: same pages, same place */
 }
-/* La colonne des traces sans page (métadonnées, signets, scripts…) est posée à
-   l'extrémité gauche plutôt que dans l'inspecteur: les deux panneaux de pages
-   se partagent alors exactement la même largeur, et une page de droite fait la
-   taille de celle de gauche. */
+/* The column of page-less traces (metadata, bookmarks, scripts…) sits at the
+   far left rather than inside the inspector: the two page panes then share
+   exactly the same width, and a page on the right matches the one on the
+   left. */
 #insRail {
   flex: 0 0 236px; overflow-y: auto;
   background: var(--paper); border-right: 1px solid var(--line);
@@ -271,8 +271,8 @@ header {
   background: var(--paper); border: 1px solid var(--paper-edge); border-left: none;
   padding: 2px 7px; border-radius: 0 5px 5px 0;
 }
-/* compte-rendu de la page: posé sous son bord, il ne change pas sa hauteur et
-   ne décale donc pas la synchronisation. */
+/* page summary: placed under its edge, it does not change the page height and
+   so does not shift the synchronisation. */
 .ins-page-counts {
   position: absolute; top: 100%; left: 0; right: 0;
   font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-faint);
@@ -285,7 +285,7 @@ header {
 .ins-page.is-page-deleted { border-color: var(--accent); background: #faf6f7; }
 .ins-page.is-page-deleted .ins-page-layer { opacity: .35; }
 
-/* le calque caché, dessiné à la place exacte qu'il occupe dans le fichier */
+/* the hidden layer, drawn at the exact place it occupies in the file */
 .ig-text { fill: var(--ink); font-family: var(--font-body); }
 .ig-text.is-hidden { fill: #a06a12; }
 .ig-text.is-gone { fill: var(--ink-faint); text-decoration: line-through; }
@@ -352,8 +352,8 @@ header {
 .ins-chip-kept { color: #8a5210; background: #fdf4e6; border-color: #ecd6ad; }
 .ins-chip-partial { color: #8a5210; background: #fdf4e6; border-color: #ecd6ad; }
 
-/* étroit: on empile les deux vues plutôt que de les serrer côte à côte, et la
-   colonne des métadonnées passe au-dessus des pages. */
+/* narrow: stack the two views rather than squeezing them side by side, and move
+   the metadata column above the pages. */
 @media (max-width: 900px) {
   #workspace.view-split { flex-direction: column; }
   .view-split #stage, .view-split #inspector { flex: 1 1 50%; }
@@ -361,7 +361,7 @@ header {
   #insRail { flex: none; max-height: 34vh; border-right: none; border-bottom: 1px solid var(--line); }
 }
 
-/* ---------- barre de progression indéterminée ---------- */
+/* ---------- indeterminate progress bar ---------- */
 #busybar {
   flex: none; height: 3px; overflow: hidden; background: var(--accent-soft);
   position: relative; z-index: 19;

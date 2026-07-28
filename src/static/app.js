@@ -330,9 +330,8 @@ function edgesFrom(name, bb, p) {
   return [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)];
 }
 
-// Pointer events (et non mouse): souris, stylet et doigt passent par le même
-// chemin. `pointercancel` arrive quand le navigateur reprend le geste pour
-// faire défiler la page — le tracé en cours doit alors être abandonné.
+// `pointercancel` arrive quand le navigateur reprend la main sur le geste en
+// cours: le tracé doit alors être abandonné plutôt que validé à moitié.
 function startDrag(ev, onMove, onEnd) {
   const id = ev.pointerId;
   const move = e => { if (e.pointerId === id) onMove(e); };
@@ -493,7 +492,7 @@ function renderHandles(svg, i, idx, z) {
 
 // ---------- édition: déplacer / redimensionner ----------
 function beginZoneDrag(ev, i, idx) {
-  if (!ev.isPrimary || (ev.pointerType === 'mouse' && ev.button !== 0)) return;
+  if (!ev.isPrimary || ev.button !== 0) return;
   ev.stopPropagation();
   keyboardNav = false;
   selected = { page: i, index: idx };
@@ -520,7 +519,7 @@ function beginZoneDrag(ev, i, idx) {
 }
 
 function beginVertexDrag(ev, i, idx, vi) {
-  if (!ev.isPrimary || (ev.pointerType === 'mouse' && ev.button !== 0)) return;
+  if (!ev.isPrimary || ev.button !== 0) return;
   ev.stopPropagation();
   const svg = pageEls[i].svg;
   const z = zones[i][idx];
@@ -538,7 +537,7 @@ function beginVertexDrag(ev, i, idx, vi) {
 }
 
 function beginResize(ev, i, idx, name) {
-  if (!ev.isPrimary || (ev.pointerType === 'mouse' && ev.button !== 0)) return;
+  if (!ev.isPrimary || ev.button !== 0) return;
   ev.stopPropagation();
   const svg = pageEls[i].svg;
   const z = zones[i][idx];
@@ -571,7 +570,7 @@ function beginResize(ev, i, idx, name) {
 // ---------- tracé ----------
 function wireLayer(i, svg) {
   svg.addEventListener('pointerdown', e => {
-    if (!e.isPrimary || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    if (!e.isPrimary || e.button !== 0) return;
     if (deletedPages.has(i)) return;
     activePage = i;
     if (selected) { selected = null; closeMenu(); renderZones(i); }

@@ -38,12 +38,6 @@ what is still open.
       two-way with a proper lock, or drop the syncing entirely and let each
       pane scroll on its own.
 
-- [ ] **Touch drawing is discoverable only from the help popup.** The page
-      layer uses `touch-action: pan-y`, so a vertical drag scrolls and a zone
-      has to be started with a sideways movement. It works, but it is a trick
-      that needs explaining. An explicit "naviguer / dessiner" toggle, shown
-      only for coarse pointers, would be honest instead of clever.
-
 - [ ] **The inspector reads the document once, at open.** If a redaction ever
       became something you could undo *after* export, or if the file were
       reloaded, the pane would be stale. Not a problem today — nothing mutates

@@ -59,6 +59,13 @@ allowed a one-line comment instead of a docstring.
   anything *outside* the outline is not — on a scan that shows up as a white
   bounding box. The white cover, the mosaic (masked by `_shape_mask`) and the
   inspector's status all follow the same outline.
+- The two panes must always show a page at the same size — that is what makes
+  the inspector readable "on top of" the document and what the scroll
+  synchronisation assumes. So there is one zoom, not one per pane: both size
+  their pages from `--page-w * --zoom` (`syncPageWidth` / `setZoom` in
+  `src/static/app.js`). `--page-w` is set from JS because a CSS percentage
+  would resolve against a container that is itself sized by its pages once
+  zoomed in.
 - Documents are held in an in-memory `DOCS` dict keyed by a generated session
   id — there is no persistence and no auth; this is meant to run locally only.
 - `src/probe.py` reads the document once, when it is opened, and the inspector

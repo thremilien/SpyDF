@@ -61,10 +61,31 @@ Each zone has a mode, switched from its right-click menu:
 - **Pixelate** — the area is replaced by a genuine downsample of itself,
   an unreadable mosaic; the source objects are removed just the same.
 
+The closing double-click of the polygon is taken before the browser gets it: it
+would otherwise start a word selection on the nearest text — which a
+translation or dictionary extension then picks up on a word you never meant to
+select.
+
 ### Pages
 
 The trash button on a page marks it for deletion; the page is dropped from the
 exported document entirely.
+
+### Zoom
+
+`Ctrl` with the wheel, `Ctrl` and `+` / `−` / `0`, or the buttons in the
+toolbar, from 25% to 500%. Zooming under the cursor keeps the point under it
+still, and both views zoom together: the zoom is a single factor the two panes
+size their pages from, so a page on the right can never end up a different size
+from the one on the left.
+
+Once a page is wider than its pane, drag it with the **middle button** or hold
+**Space** and drag with the left one; the arrows, `Page Up`/`Page Down`,
+`Home` and `End` move around too. Panning one pane scrolls the other to the
+same place, horizontally included.
+
+Pages are re-rendered server-side at the new size once the zoom settles, so
+zooming in gives you more detail rather than a bigger blur.
 
 ### Beyond the visible page
 
@@ -115,7 +136,9 @@ failed redaction is visible rather than silent.
 ### Keyboard
 
 `Ctrl+Z` / `Ctrl+Y` undo and redo. `Tab` moves between zones, `Enter` opens
-the selected zone's menu, `Delete` removes it, `Esc` cancels.
+the selected zone's menu, `Delete` removes it, `Esc` cancels. `Ctrl` with
+`+` / `−` / `0` zooms; arrows, `Page Up`/`Page Down`, `Home`/`End` and `Space`
+held with a drag move around a zoomed page.
 
 ### Watermark
 

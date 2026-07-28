@@ -38,6 +38,7 @@ let view = 'split';
 
 function applyView() {
   workspace.className = `view-${view}` + (inspectData ? '' : ' no-doc');
+  syncPageWidth();   // a pane just changed width: the pages follow
   document.querySelectorAll('.view-btn').forEach(b => {
     const on = b.dataset.view === view;
     b.classList.toggle('active', on);
@@ -460,14 +461,22 @@ function pageEllsOf(pane) {
     : ghosts.map(g => g && g.el);
 }
 
+// Horizontal too, once zoomed in: a page wider than its pane is read at some
+// offset, and the same offset has to hold on the other side.
 function readPos(pane) {
   const els = pageEllsOf(pane);
-  const base = pane.getBoundingClientRect().top;
+  const box = pane.getBoundingClientRect();
   for (let i = 0; i < els.length; i++) {
     if (!els[i]) continue;
     const r = els[i].getBoundingClientRect();
-    const top = r.top - base;
-    if (top + r.height > 0) return { i, frac: r.height ? -top / r.height : 0 };
+    const top = r.top - box.top;
+    if (top + r.height > 0) {
+      return {
+        i,
+        frac: r.height ? -top / r.height : 0,
+        fracX: r.width ? (box.left - r.left) / r.width : 0,
+      };
+    }
   }
   return null;
 }
@@ -476,9 +485,10 @@ function applyPos(pane, pos) {
   const els = pageEllsOf(pane);
   const target = els[Math.min(pos.i, els.length - 1)];
   if (!target) return;
+  const box = pane.getBoundingClientRect();
   const r = target.getBoundingClientRect();
-  const top = r.top - pane.getBoundingClientRect().top;
-  pane.scrollTop += top + pos.frac * r.height;
+  pane.scrollTop += (r.top - box.top) + pos.frac * r.height;
+  pane.scrollLeft += (r.left - box.left) + pos.fracX * r.width;
 }
 
 let scrollOwner = null;
@@ -535,6 +545,19 @@ onZonesChanged = page => {
 // The reading position now travels through the scrolling itself: there is no
 // page jump left to trigger.
 onActivePageChanged = () => {};
+
+// The zoom is a single factor applied to both panes through CSS, so there is
+// nothing to scale here: only the reading position has to be carried over, from
+// the pane that was zoomed to the other one.
+onZoomChanged = pane => {
+  if (!inspectData) return;
+  scrollOwner = null;
+  if (pane === inspector) syncFrom(inspector, stage);
+  else syncFrom(stage, inspector);
+};
+
+// pages of the right-hand pane, for the zoom anchor (app.js)
+ghostEls = () => ghosts.map(g => g && g.el);
 
 // the checkbox changes the fate of items on every page at once
 $('meta').addEventListener('change', () => { if (inspectData) refreshAll(); });

@@ -22,6 +22,7 @@ const pagesEl = $('pages'), menu = $('zoneMenu');
 let onDocumentOpened = () => {};
 let onZonesChanged = () => {};
 let onActivePageChanged = () => {};
+let onZoomChanged = () => {};
 
 const ICON_TRASH = '<svg viewBox="0 0 18 18" fill="none"><path d="M4 5.5h10M7.5 5.5V4a1 1 0 011-1h1a1 1 0 011 1v1.5M5.5 5.5l.6 8a1 1 0 001 .9h3.8a1 1 0 001-.9l.6-8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_RESTORE = '<svg viewBox="0 0 18 18" fill="none"><path d="M4 8h7a3.5 3.5 0 010 7H8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M6.5 5L4 8l2.5 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -146,6 +147,7 @@ async function openFile(f) {
   zones = {}; history = []; redoStack = [];
   activePage = 0; selected = null; deletedPages = new Set();
   cancelPending();
+  resetZoom();   // a new document starts at 100%
   $('drop').hidden = true; pagesEl.hidden = false;
   setStatus(`Rendering page 1 of ${pages.length}…`, 'busy-text');
   buildPages();
@@ -332,16 +334,12 @@ function loadPage(i) {
   pe.img.src = `/api/page/${sid}/${i}?w=${w}`;
 }
 
-// when the window widens, re-request the visible pages at a higher resolution
-let reflowTimer = null;
-window.addEventListener('resize', () => {
-  if (!sid) return;
-  clearTimeout(reflowTimer);
-  reflowTimer = setTimeout(() => {
-    pageEls.forEach((pe, i) => {
-      if (pe.loaded && pe.container.getBoundingClientRect().top < window.innerHeight * 2) loadPage(i);
-    });
-  }, 250);
+// A pane resizes without the window doing so — switching view, or a document
+// opening and giving the inspector its half — so this watches the panes
+// themselves: the pages are re-laid out, then re-requested sharper.
+const paneResize = new ResizeObserver(() => {
+  syncPageWidth();
+  if (sid) scheduleSharpen();
 });
 
 // ---------- geometry ----------
@@ -444,7 +442,9 @@ function drawWatermarkPreview(svg, i) {
                               w0 + WM_LINE_HEIGHT * p.w / p.h) * 0.97;
   const fontSize = Math.min(Math.max(Math.min(diag * WM_DIAGONAL_RATIO / w0, fit), WM_MIN_SIZE), fit);
   t.setAttribute('font-size', fontSize);
-  t.setAttribute('transform', `rotate(${angleDeg} ${cx} ${cy})`);
+  // negative: SVG turns clockwise (y grows downwards), and the stamp runs
+  // bottom-left to top-right. With +angle the preview leaned the other way.
+  t.setAttribute('transform', `rotate(${-angleDeg} ${cx} ${cy})`);
 }
 
 function renderZones(i) {
@@ -538,6 +538,7 @@ function renderHandles(svg, i, idx, z) {
       c.addEventListener('pointerdown', ev => beginVertexDrag(ev, i, idx, vi));
       c.addEventListener('dblclick', ev => {
         ev.preventDefault(); ev.stopPropagation();
+        dropSelection();
         if (z.points.length <= 3) return;   // a polygon keeps at least 3 vertices
         pushHistory();
         z.points.splice(vi, 1);
@@ -642,6 +643,13 @@ function beginResize(ev, i, idx, name) {
 }
 
 // ---------- drawing ----------
+// A selection made despite the guards (an extension forcing one, a drag that
+// started outside the page) is dropped rather than left highlighted.
+function dropSelection() {
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed) sel.removeAllRanges();
+}
+
 function wireLayer(i, svg) {
   svg.addEventListener('pointerdown', e => {
     if (!e.isPrimary || e.button !== 0) return;
@@ -651,12 +659,20 @@ function wireLayer(i, svg) {
     if (tool === 'rect') startRect(i, svg, e);
     else if (tool === 'freehand') startFreehand(i, svg, e);
   });
+  // The second click of a double-click is a word selection for the browser:
+  // left alone it selects the nearest text on the page — which a translation
+  // extension then picks up. The gesture belongs to the polygon tool, so it is
+  // taken before the browser acts on it.
+  svg.addEventListener('mousedown', e => { if (e.detail > 1) e.preventDefault(); });
+  svg.addEventListener('selectstart', e => e.preventDefault());
   svg.addEventListener('click', e => {
     if (tool === 'polygon' && !deletedPages.has(i)) polyClick(i, svg, e);
   });
   svg.addEventListener('dblclick', e => {
-    if (tool !== 'polygon' || !pending || pending.page !== i) return;
     e.preventDefault();
+    e.stopPropagation();
+    dropSelection();
+    if (tool !== 'polygon' || !pending || pending.page !== i) return;
     // the second click of the double-click already added a duplicate vertex
     if (pending.pts.length > 1) pending.pts.pop();
     finishPolygon();
@@ -845,6 +861,206 @@ function setDefaultMode(m) {
 $('mode-delete').onclick = () => setDefaultMode('delete');
 $('mode-pixelate').onclick = () => setDefaultMode('pixelate');
 
+// ---------- zoom ----------
+// One factor for the whole workspace, not one per pane: both panes size their
+// pages from the same --page-w and --zoom, so they cannot drift apart. The two
+// views stay aligned page for page whatever the zoom, and the scroll
+// synchronisation below keeps working unchanged.
+const PAGE_MAX_W = 880;      // the width of a page at 100%, when the pane is wide enough
+const PAGE_MIN_W = 120;
+const ZOOM_MIN = 0.25, ZOOM_MAX = 5;
+const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.8, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5];
+const ZOOM_WHEEL = 1.0015;   // per wheel pixel: one notch ≈ 16%
+const PAN_STEP = 60;         // arrow keys, in screen pixels
+const LINE_PX = 16, PAGE_PX = 400;   // wheel deltas reported in lines or pages
+
+let zoom = 1;
+let activePane = null;       // the pane the last pointer or scroll touched
+const inspectorEl = $('inspector');
+
+// The pages of a pane, in order. The inspector fills this in when it is loaded.
+let ghostEls = () => [];
+function elsOf(pane) {
+  return pane === inspectorEl ? ghostEls() : pageEls.map(pe => pe.container);
+}
+// The pane a keyboard zoom or pan acts on: the last one pointed at, unless the
+// current view has hidden it.
+function livePane() {
+  const p = activePane || stageEl;
+  return p.clientWidth ? p : (p === stageEl ? inspectorEl : stageEl);
+}
+
+// The base width of a page: as wide as the visible panes allow, capped. Set
+// from here rather than in CSS because a percentage would resolve against a
+// container that is itself sized by its pages once zoomed in.
+//
+// The narrower of the two panes wins, and both use it: a scrollbar on one side
+// only would otherwise make its pages overflow, and the two views would no
+// longer show a page at the same size.
+function paneInnerWidth(pane) {
+  if (!pane.clientWidth) return Infinity;   // hidden by the current view
+  const cs = getComputedStyle(pane);
+  return pane.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+}
+
+function syncPageWidth() {
+  const inner = Math.min(paneInnerWidth(stageEl), paneInnerWidth(inspectorEl));
+  const w = Math.min(PAGE_MAX_W, Math.max(PAGE_MIN_W, inner));
+  document.documentElement.style.setProperty('--page-w', `${Math.round(w)}px`);
+}
+
+// Zooming keeps one point still. That point is read as "page i, at fraction
+// (fx, fy) of it" — the same terms as the scroll synchronisation — then put
+// back under the same screen position once the pages have been resized.
+function anchorAt(els, cx, cy) {
+  for (let i = 0; i < els.length; i++) {
+    if (!els[i]) continue;
+    const r = els[i].getBoundingClientRect();
+    if (cy < r.bottom || i === els.length - 1) {
+      return {
+        i, cx, cy,
+        fx: r.width ? (cx - r.left) / r.width : 0,
+        fy: r.height ? (cy - r.top) / r.height : 0,
+      };
+    }
+  }
+  return null;
+}
+function centerAnchor(pane) {
+  const r = pane.getBoundingClientRect();
+  return anchorAt(elsOf(pane), r.left + r.width / 2, r.top + r.height / 2);
+}
+function restoreAnchor(pane, a) {
+  const els = elsOf(pane);
+  const el = a && els[a.i];
+  if (!el) return;
+  const r = el.getBoundingClientRect();   // forces the new layout: read after the zoom
+  pane.scrollLeft += r.left + a.fx * r.width - a.cx;
+  pane.scrollTop += r.top + a.fy * r.height - a.cy;
+}
+
+function setZoom(z, pane, anchor) {
+  z = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
+  if (Math.abs(z - zoom) < 0.001) return;
+  zoom = z;
+  document.documentElement.style.setProperty('--zoom', zoom);
+  updateZoomUI();
+  if (selected) renderZones(selected.page);   // handles keep a constant on-screen size
+  if (pane) restoreAnchor(pane, anchor);
+  onZoomChanged(pane || stageEl);
+  scheduleSharpen();
+}
+
+function resetZoom() {
+  zoom = 1;
+  document.documentElement.style.setProperty('--zoom', 1);
+  syncPageWidth();
+  updateZoomUI();
+}
+
+function stepZoom(dir, pane, anchor) {
+  const next = dir > 0
+    ? ZOOM_STEPS.find(s => s > zoom + 0.001)
+    : ZOOM_STEPS.filter(s => s < zoom - 0.001).pop();
+  setZoom(next === undefined ? (dir > 0 ? ZOOM_MAX : ZOOM_MIN) : next, pane, anchor);
+}
+
+function zoomFromKeyboard(dir) {
+  const pane = livePane();
+  if (dir === 0) setZoom(1, pane, centerAnchor(pane));
+  else stepZoom(dir, pane, centerAnchor(pane));
+}
+
+function updateZoomUI() {
+  $('zoomLevel').textContent = `${Math.round(zoom * 100)}%`;
+  const off = !sid;
+  $('zoomIn').disabled = off || zoom >= ZOOM_MAX - 0.001;
+  $('zoomOut').disabled = off || zoom <= ZOOM_MIN + 0.001;
+  $('zoomLevel').disabled = off;
+}
+
+// Rendering a page is CPU-bound server-side: wait for the zoom to settle before
+// asking for sharper images.
+let sharpenTimer = null;
+function scheduleSharpen() {
+  clearTimeout(sharpenTimer);
+  sharpenTimer = setTimeout(sharpenVisible, 250);
+}
+function sharpenVisible() {
+  if (!sid) return;
+  pageEls.forEach((pe, i) => {
+    const r = pe.container.getBoundingClientRect();
+    if (r.bottom > -window.innerHeight && r.top < window.innerHeight * 2) loadPage(i);
+  });
+}
+
+$('zoomIn').onclick = () => zoomFromKeyboard(1);
+$('zoomOut').onclick = () => zoomFromKeyboard(-1);
+$('zoomLevel').onclick = () => zoomFromKeyboard(0);
+
+// ---------- panning ----------
+// Middle-button drag, or Space held with the left button: the two habitual ways
+// to drag a zoomed page around. While Space is held the drawing layer lets the
+// pointer through (CSS .pan-ready), so a drag scrolls instead of drawing.
+let spaceDown = false;
+
+function setPanReady(on) {
+  if (spaceDown === on) return;
+  spaceDown = on;
+  document.body.classList.toggle('pan-ready', on);
+}
+
+function wirePane(pane) {
+  pane.addEventListener('pointerenter', () => { activePane = pane; });
+  pane.addEventListener('scroll', () => { activePane = pane; }, { passive: true });
+  pane.addEventListener('wheel', e => {
+    if (!sid || !(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();   // this gesture is ours, not the browser's page zoom
+    const d = e.deltaMode === 1 ? e.deltaY * LINE_PX
+      : e.deltaMode === 2 ? e.deltaY * PAGE_PX : e.deltaY;
+    setZoom(zoom * Math.pow(ZOOM_WHEEL, -d), pane, anchorAt(elsOf(pane), e.clientX, e.clientY));
+  }, { passive: false });
+
+  pane.addEventListener('pointerdown', e => {
+    if (e.button !== 1 && !(spaceDown && e.button === 0)) return;
+    e.preventDefault();
+    activePane = pane;
+    const sx = pane.scrollLeft, sy = pane.scrollTop;
+    const x0 = e.clientX, y0 = e.clientY;
+    document.body.classList.add('panning');
+    startDrag(e, ev => {
+      pane.scrollLeft = sx - (ev.clientX - x0);
+      pane.scrollTop = sy - (ev.clientY - y0);
+    }, () => document.body.classList.remove('panning'));
+  });
+  // without this the middle button opens the browser's auto-scroll widget
+  pane.addEventListener('auxclick', e => { if (e.button === 1) e.preventDefault(); });
+}
+
+// Arrows and page keys scroll the pane under the pointer, as in any viewer.
+// Ignored as soon as something is focused: a zone, the watermark field or the
+// zone menu answers them itself.
+const PAN_KEYS = {
+  ArrowUp: [0, -PAN_STEP], ArrowDown: [0, PAN_STEP],
+  ArrowLeft: [-PAN_STEP, 0], ArrowRight: [PAN_STEP, 0],
+};
+function panKey(e) {
+  const pane = livePane();
+  const step = PAN_KEYS[e.key];
+  if (step) { pane.scrollBy(step[0], step[1]); return true; }
+  const h = pane.clientHeight * 0.9;
+  if (e.key === 'PageDown') { pane.scrollBy(0, h); return true; }
+  if (e.key === 'PageUp') { pane.scrollBy(0, -h); return true; }
+  if (e.key === 'Home') { pane.scrollTo({ top: 0 }); return true; }
+  if (e.key === 'End') { pane.scrollTo({ top: pane.scrollHeight }); return true; }
+  return false;
+}
+
+wirePane(stageEl);
+wirePane(inspectorEl);
+paneResize.observe(stageEl);
+paneResize.observe(inspectorEl);
+
 $('undo').onclick = undo;
 $('redo').onclick = redo;
 $('clear').onclick = () => {
@@ -862,7 +1078,15 @@ window.addEventListener('keydown', e => {
   // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y — insensitive to Shift and Caps Lock
   if (mod && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (mod && k === 'y') { e.preventDefault(); redo(); return; }
+  // Ctrl +/-/0, as everywhere else — taken from the browser, which would
+  // otherwise scale the whole interface instead of the pages.
+  if (mod && (k === '+' || k === '=' || k === 'add')) { e.preventDefault(); zoomFromKeyboard(1); return; }
+  if (mod && (k === '-' || k === '_' || k === 'subtract')) { e.preventDefault(); zoomFromKeyboard(-1); return; }
+  if (mod && k === '0') { e.preventDefault(); zoomFromKeyboard(0); return; }
   if (mod) return;
+  const idle = !document.activeElement || document.activeElement === document.body;
+  if (e.code === 'Space' && idle) { e.preventDefault(); setPanReady(true); return; }
+  if (idle && menu.hidden && panKey(e)) { e.preventDefault(); return; }
   if (e.key === 'Escape') { cancelPending(); selected = null; closeMenu(); renderAll(); }
   if (e.key === 'Enter' && pending) finishPolygon();
   if (e.key === 'ContextMenu' && selected && menu.hidden) {
@@ -871,6 +1095,13 @@ window.addEventListener('keydown', e => {
     openMenuOnZone(zones[selected.page][selected.index]);
   }
   if ((e.key === 'Delete' || e.key === 'Backspace') && selected) { e.preventDefault(); deleteSelected(); }
+});
+// the key can be released over another window, or the window lose the focus
+// mid-pan: either way the hand cursor must not stay on
+window.addEventListener('keyup', e => { if (e.code === 'Space') setPanReady(false); });
+window.addEventListener('blur', () => {
+  setPanReady(false);
+  document.body.classList.remove('panning');
 });
 // handles have a fixed on-screen size: they must be redrawn on resize
 window.addEventListener('resize', () => { if (selected) renderZones(selected.page); });
@@ -896,6 +1127,7 @@ function syncButtons() {
   $('redo').disabled = busy || redoStack.length === 0;
   $('clear').disabled = busy || !n;
   $('export').disabled = busy || !(total || deletedPages.size || watermarkValue());
+  updateZoomUI();
 }
 
 function updateStatus() {
@@ -957,3 +1189,5 @@ $('wm').addEventListener('input', () => {
 
 setTool('rect');
 setDefaultMode('delete');
+syncPageWidth();
+updateZoomUI();

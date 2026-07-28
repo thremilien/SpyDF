@@ -72,6 +72,16 @@
 
   <span id="pnum" class="pnum">— / —</span>
 
+  <div class="btn-group" role="group" aria-label="Zoom">
+    <button id="zoomOut" class="btn icon-only" disabled title="Zoom out (Ctrl+-, Ctrl+wheel)" aria-label="Zoom out">
+      <svg viewBox="0 0 18 18" fill="none"><line x1="4" y1="9" x2="14" y2="9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
+    <button id="zoomLevel" class="btn zoom-level" disabled title="Back to 100% (Ctrl+0)" aria-label="Zoom level, click to go back to 100%">100%</button>
+    <button id="zoomIn" class="btn icon-only" disabled title="Zoom in (Ctrl++, Ctrl+wheel)" aria-label="Zoom in">
+      <svg viewBox="0 0 18 18" fill="none"><line x1="4" y1="9" x2="14" y2="9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><line x1="9" y1="4" x2="9" y2="14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+
   <div class="grow"></div>
 
   <div class="btn-group" role="group" aria-label="View">
@@ -139,6 +149,7 @@
       <li>Drag a zone to move it, or its handles to resize it.</li>
       <li><b>Right-click</b> a zone to change its mode or delete it. <b>Ctrl+Z</b> undoes, <b>Ctrl+Y</b> redoes.</li>
       <li>From the keyboard: <b>Tab</b> moves between zones, <b>Enter</b> opens the zone menu, <b>Delete</b> removes it.</li>
+      <li><b>Ctrl+wheel</b> or <b>Ctrl</b> with <b>+</b> / <b>−</b> / <b>0</b> zooms; both views zoom together. Drag with the <b>middle button</b> or hold <b>Space</b> to move around, arrows and <b>Page Up/Down</b> too.</li>
       <li>What disappears follows the <b>drawn outline</b>, polygons and freehand included: nothing outside it is erased or covered.</li>
       <li><b>Delete</b> erases the content; <b>Pixelate</b> leaves nothing but an unreadable mosaic.</li>
       <li>A <b>watermark</b> (typed in the field next to Export) is stamped diagonally across every exported page; a preview appears on the pages as you type.</li>

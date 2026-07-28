@@ -209,6 +209,7 @@ app renders what the screen actually shows.
 | `SPYDF_MAX_STRIPS` | `200` | cap on the strips a single zone may produce |
 | `SPYDF_MASK_MAX_PX` | `240` | resolution of the mask clipping a mosaic to its outline |
 | `SPYDF_LEAK_COVERAGE` | `0.15` | share of a word inside a zone above which it is reported as a leak |
+| `SPYDF_RECOMPRESS_QUALITY` | `80` | JPEG quality for the images redaction rewrote losslessly; `0` keeps them lossless, and a scan then exports several times heavier than it came in |
 
 **Watermark**
 

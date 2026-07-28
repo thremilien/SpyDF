@@ -80,6 +80,9 @@ STRIP_HEIGHT = env_float("SPYDF_STRIP_HEIGHT", 2.0)  # one redaction strip, in P
 MAX_STRIPS = env_int("SPYDF_MAX_STRIPS", 200)  # a tall zone must not yield a thousand rects
 MASK_MAX_PX = env_int("SPYDF_MASK_MAX_PX", 240)  # mask clipping a mosaic to the outline
 LEAK_COVERAGE = env_float("SPYDF_LEAK_COVERAGE", 0.15)  # word coverage above which it leaks
+# JPEG quality used to re-encode the images apply_redactions rewrote losslessly;
+# 0 disables it and keeps the (much heavier) lossless output.
+RECOMPRESS_QUALITY = env_int("SPYDF_RECOMPRESS_QUALITY", 80)
 
 # ---------- watermark ----------
 WATERMARK_MAX_LEN = env_int("SPYDF_WATERMARK_MAX_LEN", 80)

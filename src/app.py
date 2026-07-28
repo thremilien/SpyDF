@@ -26,6 +26,7 @@ from src.config import (
     MAX_ZOOM,
     MIN_ZOOM,
     MOSAIC_BLOCKS,
+    RECOMPRESS_QUALITY,
     RENDER_ZOOM,
     SESSION_TTL,
     SID_LOG_LEN,
@@ -390,6 +391,30 @@ def _mosaic_pixmap(page, rect):
     except Exception:
         return None
     return pm if pm.width and pm.height else None
+
+
+def _recompress_images(doc):
+    """Re-encode as JPEG the images `apply_redactions` rewrote losslessly.
+
+    PDF_REDACT_IMAGE_PIXELS decodes every image a zone touches, blanks the
+    covered pixels and writes it back Flate-compressed. On a scan that turns a
+    JPEG page into a lossless bitmap, five to six times heavier — a 7 MB set of
+    scans exports at 40 MB. Doing it after the fact is safe: those pixels are
+    already destroyed, so the lossy pass has nothing left to give back.
+
+    Args:
+        doc: The document, after redaction and before saving.
+    """
+    if RECOMPRESS_QUALITY <= 0:
+        return
+    # Suppressed: on an older PyMuPDF, or an image MuPDF declines to re-encode,
+    # a heavy export beats no export.
+    with contextlib.suppress(Exception):
+        # lossy=False leaves an untouched JPEG on its original bytes rather
+        # than costing it a second generation; bitonal=False keeps a 1-bit fax
+        # scan bitonal, which JPEG would both grey and inflate. dpi_threshold
+        # stays unset: this recompresses, it never downsamples.
+        doc.rewrite_images(quality=RECOMPRESS_QUALITY, lossy=False, bitonal=False)
 
 
 def _purge_annots(page, rects):
@@ -799,6 +824,11 @@ async def api_export(request: Request, payload: dict):
 
     if strip_meta:
         _scrub_document(doc)
+
+    # only pages carrying a zone were rewritten, so there is nothing to
+    # recompress otherwise — and nothing to lose a generation over.
+    if zones_by_page:
+        _recompress_images(doc)
 
     # garbage=4 + clean: objects left orphaned (old images, replaced content
     # streams) are really removed from the file, not merely dereferenced as an

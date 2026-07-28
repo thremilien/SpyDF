@@ -13,6 +13,8 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from src.probe import inspect_document
+
 PACKAGE_DIR = Path(__file__).parent
 RENDER_ZOOM = 4.0  # zoom de repli si le client ne demande pas de largeur
 MIN_ZOOM = 1.5
@@ -115,6 +117,15 @@ def api_page(sid: str, n: int, w: int = 0):
     doc.close()
     return Response(png, media_type="image/png",
                     headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/inspect/{sid}")
+def api_inspect(sid: str):
+    """Tout ce que le document transporte sans l'afficher: couche de texte,
+    metadonnees, signets, annotations, champs, pieces jointes, calques, liens,
+    JavaScript. Lecture seule; c'est l'export qui decide de ce qui disparait."""
+    entry = _get(sid)
+    return JSONResponse(inspect_document(entry["bytes"]))
 
 
 def _mosaic_pixmap(page, rect):

@@ -13,7 +13,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.app import _apply_watermark, _verify, app
-from tests.test_redaction import ZONE, _doc_with_survivors, build_pdf, every_byte, open_doc, rect_points
+from tests.test_redaction import (
+    ZONE,
+    _doc_with_survivors,
+    build_pdf,
+    every_byte,
+    open_doc,
+    rect_points,
+)
 
 WATERMARK = "COPIE CONFIDENTIELLE"
 
@@ -25,11 +32,16 @@ def client():
 
 def export(client, sid, zones=None, deleted_pages=(), strip_meta=True, watermark=None):
     """Variante de tests/test_redaction.py::export qui transmet un filigrane."""
-    r = client.post("/api/export", json={
-        "sid": sid, "zones": zones or {},
-        "deleted_pages": list(deleted_pages), "strip_meta": strip_meta,
-        "watermark": watermark,
-    })
+    r = client.post(
+        "/api/export",
+        json={
+            "sid": sid,
+            "zones": zones or {},
+            "deleted_pages": list(deleted_pages),
+            "strip_meta": strip_meta,
+            "watermark": watermark,
+        },
+    )
     assert r.status_code == 200, r.text
     body = r.json()
     dl = client.get(body["download"])
@@ -114,9 +126,9 @@ def test_real_leak_is_still_reported_with_a_watermark(client):
     watermarked = _apply_watermark(_doc_with_survivors(), WATERMARK)
 
     leaks = _verify(watermarked, {0: [zone]}, {0: 0})
-    kinds = {l["kind"] for l in leaks}
+    kinds = {lk["kind"] for lk in leaks}
     assert kinds == {"texte", "annotation", "champ"}, leaks
-    texts = " ".join(l["text"] for l in leaks)
+    texts = " ".join(lk["text"] for lk in leaks)
     assert "STILLHERE" in texts
 
 
@@ -161,7 +173,9 @@ def test_watermark_only_export_succeeds(client):
 
 def test_export_with_nothing_at_all_is_still_refused(client):
     sid = open_doc(client, build_pdf())
-    r = client.post("/api/export", json={"sid": sid, "zones": {}, "deleted_pages": [], "watermark": ""})
+    r = client.post(
+        "/api/export", json={"sid": sid, "zones": {}, "deleted_pages": [], "watermark": ""}
+    )
     assert r.status_code == 400
 
 
@@ -224,6 +238,7 @@ def test_watermark_size_does_not_depend_on_the_page_scale(client):
     boite est en pixels (2480x3508) doit recevoir le meme filigrane, en
     proportion, qu'un A4 en points (595x842). Un plafond de taille de police
     en valeur absolue faisait retomber le second a 14 % de la diagonale."""
+
     def span(width, height):
         doc = fitz.open()
         doc.new_page(width=width, height=height)

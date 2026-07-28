@@ -15,8 +15,7 @@ PORT = int(os.environ.get("PORT", 8765))
 
 def main():
     setup_logging()
-    log_event("startup", host=HOST, port=PORT,
-              log_file=os.environ.get("SPYDF_LOG_FILE") or "-")
+    log_event("startup", host=HOST, port=PORT, log_file=os.environ.get("SPYDF_LOG_FILE") or "-")
     url = f"http://127.0.0.1:{PORT}"
     print(f"SpyDF -> {url}")
     if HOST == "127.0.0.1":

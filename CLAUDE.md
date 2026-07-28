@@ -21,7 +21,15 @@ uv run main.py   # run the app (opens http://127.0.0.1:8765)
 uv run pytest    # regression tests for the redaction path (tests/)
 ```
 
-There is no linter configured yet.
+```bash
+uv run ruff check .          # lint
+uv run ruff check . --fix    # lint, fixing what can be fixed
+uv run ruff format .         # format
+```
+
+Ruff is configured in `pyproject.toml`. Docstrings follow the Google
+convention; `D1` (missing docstring) is off, since a trivial helper is
+allowed a one-line comment instead of a docstring.
 
 ## Structure
 

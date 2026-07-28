@@ -1,5 +1,6 @@
 """FastAPI app: routes for opening, rendering, redacting and downloading PDFs."""
 
+import contextlib
 import logging
 import math
 import mimetypes
@@ -11,7 +12,7 @@ import uuid
 from pathlib import Path
 
 import fitz
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -21,20 +22,20 @@ from src.probe import inspect_document
 PACKAGE_DIR = Path(__file__).parent
 RENDER_ZOOM = 4.0  # zoom de repli si le client ne demande pas de largeur
 MIN_ZOOM = 1.5
-MAX_ZOOM = 8.0     # garde-fou memoire: 8x sur A4 = ~128 Mpx
+MAX_ZOOM = 8.0  # garde-fou memoire: 8x sur A4 = ~128 Mpx
 MOSAIC_BLOCKS = 14  # largeur en "gros pixels" d'une zone repixelisee
 STRIP_HEIGHT = 2.0  # hauteur d'une bande de redaction, en points PDF
-MAX_STRIPS = 200    # garde-fou: une zone tres haute ne genere pas mille rects
-MASK_MAX_PX = 240   # resolution du masque qui decoupe une mosaique au contour
+MAX_STRIPS = 200  # garde-fou: une zone tres haute ne genere pas mille rects
+MASK_MAX_PX = 240  # resolution du masque qui decoupe une mosaique au contour
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
-SESSION_TTL = 2 * 3600   # un document oublie ne doit pas rester en RAM
+SESSION_TTL = 2 * 3600  # un document oublie ne doit pas rester en RAM
 MAX_SESSIONS = 32
 
 WATERMARK_MAX_LEN = 80
 WATERMARK_MIN_SIZE = 8
-WATERMARK_DIAGONAL_RATIO = 0.78   # part de la diagonale que doit occuper le texte
-WATERMARK_FONT = "helv"           # police base-14, aucun fichier a embarquer
+WATERMARK_DIAGONAL_RATIO = 0.78  # part de la diagonale que doit occuper le texte
+WATERMARK_FONT = "helv"  # police base-14, aucun fichier a embarquer
 # pas de plafond absolu sur la taille de police: le point PDF n'a pas de
 # taille fixe a l'ecran, et une page peut mesurer 595 points (A4) comme 2480
 # (un scan dont la MediaBox est en pixels). Un plafond en points donnerait au
@@ -55,7 +56,8 @@ DOCS: dict[str, dict] = {}  # sid -> {"bytes": ..., "name": ..., "ts": ...}
 
 def _sweep():
     """Rien n'est persiste, mais un PDF garde en RAM tout ce qu'on vient d'en
-    retirer: on ne laisse pas trainer les sessions oubliees."""
+    retirer: on ne laisse pas trainer les sessions oubliees.
+    """
     now = time.time()
     for k in [k for k, v in DOCS.items() if now - v["ts"] > SESSION_TTL]:
         DOCS.pop(k, None)
@@ -80,13 +82,14 @@ def _get(key: str) -> dict:
 
 def _safe_filename(name: str) -> str:
     """Le nom vient du fichier depose: il ne doit ni casser l'en-tete
-    Content-Disposition ni ramener un chemin."""
+    Content-Disposition ni ramener un chemin.
+    """
     name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
     name = re.sub(r"[^A-Za-z0-9._ -]", "_", os.path.basename(name)).strip(" .")
     return name[:100] or "document.pdf"
 
 
-SID_LOG_LEN = 8   # un sid entier est une capacite d'acces (/api/download/{key}):
+SID_LOG_LEN = 8  # un sid entier est une capacite d'acces (/api/download/{key}):
 # on ne loggue jamais que ce prefixe, jamais le sid complet.
 
 UA_MAX_LEN = 120  # le user-agent est fourni par le client: on le borne avant
@@ -101,7 +104,8 @@ def _log_ip_fields(request: Request) -> dict:
     """request.client.host est l'adresse reelle du pair TCP. X-Forwarded-For
     est un en-tete fourni par le client (ou par le reverse proxy Dokploy /
     Traefik en amont) et n'est donc pas fiable a lui seul: on le journalise a
-    part, sans jamais l'y substituer."""
+    part, sans jamais l'y substituer.
+    """
     fields = {"ip": request.client.host if request.client else "?"}
     xff = request.headers.get("x-forwarded-for")
     if xff:
@@ -118,8 +122,13 @@ async def api_open(request: Request, file: UploadFile = File(...)):
         log_event("import_rejected", level=logging.WARNING, reason="empty", **ip_fields)
         raise HTTPException(400, "fichier vide")
     if len(data) > MAX_UPLOAD_BYTES:
-        log_event("import_rejected", level=logging.WARNING, reason="too_large",
-                  size=len(data), **ip_fields)
+        log_event(
+            "import_rejected",
+            level=logging.WARNING,
+            reason="too_large",
+            size=len(data),
+            **ip_fields,
+        )
         raise HTTPException(413, "fichier trop volumineux (200 Mo maximum)")
     try:
         doc = fitz.open(stream=data, filetype="pdf")
@@ -127,11 +136,13 @@ async def api_open(request: Request, file: UploadFile = File(...)):
         # passe on ne pourrait ni rendre ni rediger quoi que ce soit.
         if doc.needs_pass:
             doc.close()
-            log_event("import_rejected", level=logging.WARNING,
-                      reason="password_protected", **ip_fields)
+            log_event(
+                "import_rejected", level=logging.WARNING, reason="password_protected", **ip_fields
+            )
             raise HTTPException(400, "PDF protege par mot de passe")
-        pages = [{"w": p.rect.width, "h": p.rect.height,
-                  "x0": p.rect.x0, "y0": p.rect.y0} for p in doc]
+        pages = [
+            {"w": p.rect.width, "h": p.rect.height, "x0": p.rect.x0, "y0": p.rect.y0} for p in doc
+        ]
         doc.close()
     except HTTPException:
         raise
@@ -139,7 +150,7 @@ async def api_open(request: Request, file: UploadFile = File(...)):
         # le message d'exception peut en principe citer du contenu du fichier:
         # on ne le journalise pas, et jamais le nom du fichier non plus.
         log_event("import_rejected", level=logging.WARNING, reason="unreadable", **ip_fields)
-        raise HTTPException(400, f"PDF illisible: {e}")
+        raise HTTPException(400, f"PDF illisible: {e}") from e
 
     name = _safe_filename(file.filename or "document.pdf")
     sid = _put(name, data)
@@ -150,8 +161,11 @@ async def api_open(request: Request, file: UploadFile = File(...)):
     # defaut il n'apparait nulle part dans les logs. Ne pas "ameliorer" cela
     # en le rajoutant sans cette condition.
     fields = {
-        "sid": _sid_prefix(sid), "size": len(data), "pages": len(pages),
-        **ip_fields, "ms": round((time.perf_counter() - start) * 1000),
+        "sid": _sid_prefix(sid),
+        "size": len(data),
+        "pages": len(pages),
+        **ip_fields,
+        "ms": round((time.perf_counter() - start) * 1000),
     }
     if os.environ.get("SPYDF_LOG_FILENAMES") == "1":
         fields["filename"] = name
@@ -165,7 +179,8 @@ def api_page(sid: str, n: int, w: int = 0):
     """`w` = largeur voulue en pixels ecran reels (CSS x devicePixelRatio).
     Un PDF est vectoriel: il n'y a pas de "qualite native", on choisit une
     resolution. On rend donc exactement ce que l'ecran affiche, plutot qu'un
-    zoom fixe qui serait soit flou, soit du gaspillage."""
+    zoom fixe qui serait soit flou, soit du gaspillage.
+    """
     entry = _get(sid)
     doc = fitz.open(stream=entry["bytes"], filetype="pdf")
     if not 0 <= n < len(doc):
@@ -179,26 +194,28 @@ def api_page(sid: str, n: int, w: int = 0):
     pm = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
     png = pm.tobytes("png")
     doc.close()
-    return Response(png, media_type="image/png",
-                    headers={"Cache-Control": "no-store"})
+    return Response(png, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/inspect/{sid}")
 def api_inspect(sid: str):
     """Tout ce que le document transporte sans l'afficher: couche de texte,
     metadonnees, signets, annotations, champs, pieces jointes, calques, liens,
-    JavaScript. Lecture seule; c'est l'export qui decide de ce qui disparait."""
+    JavaScript. Lecture seule; c'est l'export qui decide de ce qui disparait.
+    """
     entry = _get(sid)
     return JSONResponse(inspect_document(entry["bytes"]))
 
 
 def _is_box(points, rect) -> bool:
     """Une zone rectangulaire n'a rien a decouper: son contour *est* son
-    rectangle englobant."""
+    rectangle englobant.
+    """
     return len(points) == 4 and all(
         (abs(p.x - rect.x0) < 0.01 or abs(p.x - rect.x1) < 0.01)
         and (abs(p.y - rect.y0) < 0.01 or abs(p.y - rect.y1) < 0.01)
-        for p in points)
+        for p in points
+    )
 
 
 def _spans(points, y):
@@ -206,7 +223,8 @@ def _spans(points, y):
 
     Regle non-nulle (et non pair-impair): c'est celle qu'appliquent deja le
     cache blanc pose par PyMuPDF et l'apercu SVG du navigateur. Un trace libre
-    qui se recoupe est donc plein ici comme il l'est a l'ecran."""
+    qui se recoupe est donc plein ici comme il l'est a l'ecran.
+    """
     xs = []
     for i, a in enumerate(points):
         b = points[(i + 1) % len(points)]
@@ -249,7 +267,8 @@ def _zone_rects(points, rect):
 
     Les bandes debordent legerement le contour (union des trois lignes de
     balayage de chaque bande): sur-effacer un peu est acceptable, laisser
-    survivre du contenu a l'interieur du trace ne l'est pas."""
+    survivre du contenu a l'interieur du trace ne l'est pas.
+    """
     if _is_box(points, rect):
         return [rect]
     n = max(1, min(MAX_STRIPS, int(rect.height / STRIP_HEIGHT) + 1))
@@ -258,8 +277,7 @@ def _zone_rects(points, rect):
     for i in range(n):
         y0 = rect.y0 + i * h
         y1 = y0 + h
-        sampled = [s for y in (y0, y0 + h / 2, min(y1, rect.y1 - 1e-6))
-                   for s in _spans(points, y)]
+        sampled = [s for y in (y0, y0 + h / 2, min(y1, rect.y1 - 1e-6)) for s in _spans(points, y)]
         for a, b in _merge(sampled):
             if b - a > 0.05:
                 out.append(fitz.Rect(a, y0, b, y1))
@@ -269,7 +287,8 @@ def _zone_rects(points, rect):
 
 def _shape_mask(points, rect):
     """Masque alpha du contour, a la taille du rectangle englobant: repose sur
-    la mosaique, il l'empeche de deborder du trace."""
+    la mosaique, il l'empeche de deborder du trace.
+    """
     if rect.width <= 0 or rect.height <= 0:
         return None
     s = min(MASK_MAX_PX / max(rect.width, rect.height), 4.0)
@@ -282,13 +301,14 @@ def _shape_mask(points, rect):
             i0 = max(0, int((a - rect.x0) / rect.width * w))
             i1 = min(w, int((b - rect.x0) / rect.width * w) + 1)
             if i1 > i0:
-                buf[j * w + i0:j * w + i1] = b"\xff" * (i1 - i0)
+                buf[j * w + i0 : j * w + i1] = b"\xff" * (i1 - i0)
     return fitz.Pixmap(fitz.csGRAY, w, h, bytes(buf), False)
 
 
 def _mosaic_pixmap(page, rect):
     """Rend la zone en tout petit: en la reposant a sa taille d'origine on
-    obtient une mosaique illisible du contenu initial."""
+    obtient une mosaique illisible du contenu initial.
+    """
     w, h = max(rect.width, 1.0), max(rect.height, 1.0)
     s = MOSAIC_BLOCKS / max(w, h)
     try:
@@ -302,7 +322,8 @@ def _purge_annots(page, rects):
     """apply_redactions ne touche ni aux annotations ni aux champs de
     formulaire: une note de correction garde le nom de son auteur et un champ
     garde sa valeur, meme entierement recouverts par une zone. On les supprime
-    donc explicitement des qu'ils touchent une zone."""
+    donc explicitement des qu'ils touchent une zone.
+    """
     for a in list(page.annots()):
         if a.type[0] == fitz.PDF_ANNOT_REDACT:
             continue
@@ -315,7 +336,8 @@ def _purge_annots(page, rects):
 
 def _rename_layers(doc):
     """Le nom d'un calque ("Copie de Jean Dupont") survit dans /OCProperties
-    meme quand son contenu a ete redige."""
+    meme quand son contenu a ete redige.
+    """
     for i, xref in enumerate(doc.get_ocgs() or {}, 1):
         doc.xref_set_key(xref, "Name", fitz.get_pdf_str(f"calque {i}"))
 
@@ -323,7 +345,8 @@ def _rename_layers(doc):
 def _scrub_document(doc):
     """Traces d'identite qui ne vivent pas dans le contenu des pages et que la
     redaction laisse donc intactes: metadonnees, XMP, signets (souvent le nom
-    de l'eleve), pieces jointes, JavaScript, liens, reponses de formulaire."""
+    de l'eleve), pieces jointes, JavaScript, liens, reponses de formulaire.
+    """
     doc.set_metadata({})
     for step in (
         lambda: doc.del_xml_metadata(),
@@ -331,29 +354,36 @@ def _scrub_document(doc):
         lambda: _rename_layers(doc),
         lambda: doc.scrub(redactions=False, clean_pages=False),
     ):
-        try:
+        with contextlib.suppress(Exception):
             step()
-        except Exception:
-            pass
 
 
 # Helvetica base-14 n'encode que du Latin-1: un tiret cadratin ou une
 # apostrophe typographique y ressort en glyphe parasite ("COPIE · NE PAS"
 # pour un "—" tape par l'operateur). Les caracteres francais accentues, eux,
 # sont dans Latin-1 et passent tels quels.
-_WATERMARK_FOLD = str.maketrans({
-    "–": "-", "—": "-", "−": "-", "‑": "-",
-    "‘": "'", "’": "'", "′": "'",
-    "“": '"', "”": '"',
-    "…": "...",
-})
+_WATERMARK_FOLD = str.maketrans(
+    {
+        "–": "-",
+        "—": "-",
+        "−": "-",
+        "‑": "-",
+        "‘": "'",
+        "’": "'",
+        "′": "'",
+        "“": '"',
+        "”": '"',
+        "…": "...",
+    }
+)
 
 
 def _normalize_watermark(raw) -> str:
     """Nettoie le filigrane fourni par le client: pas de saut de ligne (casserait
     la mise en page sur une seule ligne), pas de caractere de controle, longueur
     bornee, et rien qui sorte de Latin-1. Une chaine vide ou blanche equivaut a
-    "pas de filigrane"."""
+    "pas de filigrane".
+    """
     if not isinstance(raw, str):
         return ""
     text = "".join(c if c.isprintable() else " " for c in raw)
@@ -361,9 +391,11 @@ def _normalize_watermark(raw) -> str:
     # ce qui reste hors Latin-1 (emoji, alphabet non latin) n'a pas de glyphe
     # dans la police: on le replie en ASCII, sinon on le laisse tomber.
     text = "".join(
-        c if c.isascii() or _in_latin1(c)
+        c
+        if c.isascii() or _in_latin1(c)
         else unicodedata.normalize("NFKD", c).encode("ascii", "ignore").decode()
-        for c in text)
+        for c in text
+    )
     text = re.sub(r"\s+", " ", text).strip()
     return text[:WATERMARK_MAX_LEN]
 
@@ -386,7 +418,8 @@ def _watermark_fit_size(w0: float, rect) -> float:
     """Taille de police maximale pour que la boite du texte, pivotee de l'angle
     de la diagonale, tienne encore dans la page. `w0` est la largeur du texte a
     la taille 1. Le resultat est proportionnel a la page: doubler ses
-    dimensions double la taille de police, et le rendu est identique."""
+    dimensions double la taille de police, et le rendu est identique.
+    """
     denom_w = w0 + _WATERMARK_LINE_HEIGHT * rect.height / rect.width
     denom_h = w0 + _WATERMARK_LINE_HEIGHT * rect.width / rect.height
     return math.hypot(rect.width, rect.height) / max(denom_w, denom_h) * 0.97
@@ -395,7 +428,8 @@ def _watermark_fit_size(w0: float, rect) -> float:
 def _apply_watermark(data: bytes, text: str) -> bytes:
     """Tamponne `text` en diagonal sur chaque page, du coin bas-gauche vers le
     coin haut-droit. Toute erreur ici ne doit pas faire echouer l'export: un
-    export sans filigrane vaut mieux qu'une export perdu."""
+    export sans filigrane vaut mieux qu'une export perdu.
+    """
     try:
         doc = fitz.open(stream=data, filetype="pdf")
         try:
@@ -441,14 +475,24 @@ def _apply_watermark(data: bytes, text: str) -> bytes:
                 # centre le texte (largeur + hauteur typographique) sur le
                 # pivot: apres rotation autour de ce meme point, il reste
                 # centre sur la page quel que soit l'angle.
-                vert_off = (_WATERMARK_FONT_METRICS.ascender
-                            + _WATERMARK_FONT_METRICS.descender) / 2 * fontsize
+                vert_off = (
+                    (_WATERMARK_FONT_METRICS.ascender + _WATERMARK_FONT_METRICS.descender)
+                    / 2
+                    * fontsize
+                )
                 origin = fitz.Point(center.x - tl / 2, center.y + vert_off)
 
                 try:
-                    page.insert_text(origin, stamp, fontsize=fontsize, fontname=WATERMARK_FONT,
-                                     color=(0.5, 0.5, 0.5), fill_opacity=0.2,
-                                     morph=(center, fitz.Matrix(angle)), overlay=True)
+                    page.insert_text(
+                        origin,
+                        stamp,
+                        fontsize=fontsize,
+                        fontname=WATERMARK_FONT,
+                        color=(0.5, 0.5, 0.5),
+                        fill_opacity=0.2,
+                        morph=(center, fitz.Matrix(angle)),
+                        overlay=True,
+                    )
                 except Exception:
                     continue
             out = doc.tobytes(garbage=4, deflate=True, clean=True)
@@ -459,12 +503,13 @@ def _apply_watermark(data: bytes, text: str) -> bytes:
         return data
 
 
-LEAK_COVERAGE = 0.15   # part d'un mot dans la zone a partir de laquelle il fuit
+LEAK_COVERAGE = 0.15  # part d'un mot dans la zone a partir de laquelle il fuit
 
 
 def _covered_fraction(rect, rects) -> float:
     """Part de `rect` couverte par les bandes redigees. Les bandes ne se
-    chevauchent pas (une par ligne de balayage), leurs aires s'additionnent."""
+    chevauchent pas (une par ligne de balayage), leurs aires s'additionnent.
+    """
     area = rect.get_area()
     if area <= 0:
         return 0.0
@@ -478,7 +523,8 @@ def _verify(out: bytes, zones_by_page, page_map):
     Un mot n'est signale que si la zone mordait vraiment dessus. Depuis que la
     redaction suit le contour dessine et non le rectangle englobant, un mot
     qui frole le trace de quelques dixiemes de point est monnaie courante: le
-    signaler noierait les vraies fuites sous des avertissements sans objet."""
+    signaler noierait les vraies fuites sous des avertissements sans objet.
+    """
     leaks = []
     chk = fitz.open(stream=out, filetype="pdf")
     try:
@@ -496,12 +542,16 @@ def _verify(out: bytes, zones_by_page, page_map):
                     leaks.append({"page": new_no + 1, "kind": "texte", "text": w[4]})
             for a in page.annots():
                 if any(a.rect.intersects(r) for r in rects):
-                    leaks.append({"page": new_no + 1, "kind": "annotation",
-                                  "text": a.info.get("title") or a.type[1]})
+                    leaks.append(
+                        {
+                            "page": new_no + 1,
+                            "kind": "annotation",
+                            "text": a.info.get("title") or a.type[1],
+                        }
+                    )
             for w in page.widgets():
                 if any(w.rect.intersects(r) for r in rects):
-                    leaks.append({"page": new_no + 1, "kind": "champ",
-                                  "text": w.field_name or "?"})
+                    leaks.append({"page": new_no + 1, "kind": "champ", "text": w.field_name or "?"})
     finally:
         chk.close()
     return leaks
@@ -514,8 +564,9 @@ async def api_export(request: Request, payload: dict):
     try:
         entry = _get(payload.get("sid") or "")
     except HTTPException:
-        log_event("export_rejected", level=logging.WARNING,
-                  reason="unknown_session", sid=sid_prefix)
+        log_event(
+            "export_rejected", level=logging.WARNING, reason="unknown_session", sid=sid_prefix
+        )
         raise
 
     # {"3": [{"points": [[x,y], ...], "mode": "delete"|"pixelate"}, ...]} en coordonnees PDF.
@@ -537,13 +588,15 @@ async def api_export(request: Request, payload: dict):
             rect = fitz.Rect(points[0], points[0])
             for p in points:
                 rect.include_point(p)
-            parsed.append({
-                "points": points,
-                "rect": rect,
-                "box": _is_box(points, rect),
-                "rects": _zone_rects(points, rect),
-                "mode": "pixelate" if z.get("mode") == "pixelate" else "delete",
-            })
+            parsed.append(
+                {
+                    "points": points,
+                    "rect": rect,
+                    "box": _is_box(points, rect),
+                    "rects": _zone_rects(points, rect),
+                    "mode": "pixelate" if z.get("mode") == "pixelate" else "delete",
+                }
+            )
         if parsed:
             zones_by_page[int(k)] = parsed
 
@@ -554,8 +607,7 @@ async def api_export(request: Request, payload: dict):
     watermark = _normalize_watermark(payload.get("watermark"))
 
     if not zones_by_page and not deleted_pages and not watermark:
-        log_event("export_rejected", level=logging.WARNING,
-                  reason="nothing_to_do", sid=sid_prefix)
+        log_event("export_rejected", level=logging.WARNING, reason="nothing_to_do", sid=sid_prefix)
         raise HTTPException(400, "aucune zone, page supprimee ou filigrane")
 
     strip_meta = bool(payload.get("strip_meta", True))
@@ -564,8 +616,9 @@ async def api_export(request: Request, payload: dict):
 
     if len(deleted_pages) >= doc.page_count:
         doc.close()
-        log_event("export_rejected", level=logging.WARNING,
-                  reason="all_pages_deleted", sid=sid_prefix)
+        log_event(
+            "export_rejected", level=logging.WARNING, reason="all_pages_deleted", sid=sid_prefix
+        )
         raise HTTPException(400, "impossible de supprimer toutes les pages")
 
     for pno, zs in zones_by_page.items():
@@ -592,9 +645,11 @@ async def api_export(request: Request, payload: dict):
         _purge_annots(page, rects)
         for r in rects:
             page.add_redact_annot(r)
-        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS,
-                              graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED,
-                              text=fitz.PDF_REDACT_TEXT_REMOVE)
+        page.apply_redactions(
+            images=fitz.PDF_REDACT_IMAGE_PIXELS,
+            graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED,
+            text=fitz.PDF_REDACT_TEXT_REMOVE,
+        )
 
         # 3. zones "supprimer": cache blanc suivant le contour exact.
         if delete_zs:
@@ -618,12 +673,12 @@ async def api_export(request: Request, payload: dict):
             mask = _shape_mask(z["points"], rect)
             if mask is None:
                 continue
-            page.insert_image(rect, stream=pm.tobytes("png"),
-                              mask=mask.tobytes("png"), keep_proportion=False)
+            page.insert_image(
+                rect, stream=pm.tobytes("png"), mask=mask.tobytes("png"), keep_proportion=False
+            )
 
     # numero de page d'origine -> numero dans le document exporte
-    page_map = {p: p - sum(1 for d in deleted_pages if d < p)
-                for p in zones_by_page}
+    page_map = {p: p - sum(1 for d in deleted_pages if d < p) for p in zones_by_page}
 
     if deleted_pages:
         doc.delete_pages(sorted(deleted_pages))
@@ -656,19 +711,25 @@ async def api_export(request: Request, payload: dict):
     # par l'operateur. On ne journalise donc que leur nombre / leur presence,
     # jamais leur contenu — ne pas "ameliorer" ceci en y ajoutant le texte.
     log_event(
-        "export", sid=sid_prefix,
+        "export",
+        sid=sid_prefix,
         zones=sum(len(zs) for zs in zones_by_page.values()),
-        pages_deleted=len(deleted_pages), watermark=bool(watermark),
-        strip_meta=strip_meta, leaks=len(leaks), out_bytes=len(out),
+        pages_deleted=len(deleted_pages),
+        watermark=bool(watermark),
+        strip_meta=strip_meta,
+        leaks=len(leaks),
+        out_bytes=len(out),
         ms=round((time.perf_counter() - start) * 1000),
     )
 
-    return JSONResponse({
-        "download": f"/api/download/{key}",
-        "filename": f"{base}_redacted.pdf",
-        "leaks": leaks[:20],
-        "leak_count": len(leaks),
-    })
+    return JSONResponse(
+        {
+            "download": f"/api/download/{key}",
+            "filename": f"{base}_redacted.pdf",
+            "leaks": leaks[:20],
+            "leak_count": len(leaks),
+        }
+    )
 
 
 @app.get("/api/download/{key}")

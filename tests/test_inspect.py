@@ -27,17 +27,20 @@ def test_inspect_surfaces_every_hidden_carrier(client):
     assert "XMPMARKERNU" in doc["xmp"]
     assert [t["title"] for t in doc["toc"]] == ["TOCNAMEETA"]
     assert [a["name"] for a in doc["attachments"]] == ["ATTACHNAMETHETA"]
-    assert [l["name"] for l in doc["layers"]] == ["LAYERNAMEKAPPA"]
+    assert [lk["name"] for lk in doc["layers"]] == ["LAYERNAMEKAPPA"]
     assert doc["fonts"]
 
-    assert any(a["author"] == "ANNOTAUTHORDELTA" and a["content"] == "ANNOTBODYGAMMA"
-               for a in page["annots"])
-    assert any(w["name"] == "FIELDNAMEEPSILON" and w["value"] == "FIELDVALUEZETA"
-               for w in page["widgets"])
+    assert any(
+        a["author"] == "ANNOTAUTHORDELTA" and a["content"] == "ANNOTBODYGAMMA"
+        for a in page["annots"]
+    )
+    assert any(
+        w["name"] == "FIELDNAMEEPSILON" and w["value"] == "FIELDVALUEZETA" for w in page["widgets"]
+    )
 
     spans = [s for b in page["blocks"] for ln in b["lines"] for s in ln["spans"]]
     assert "SECRETNAMEALPHA" in {s["text"] for s in spans}
-    assert all(len(s["rect"]) == 4 for s in spans)   # positionnable dans le panneau
+    assert all(len(s["rect"]) == 4 for s in spans)  # positionnable dans le panneau
 
 
 def test_inspect_reports_invisible_text():
@@ -50,8 +53,12 @@ def test_inspect_reports_invisible_text():
     data = doc.tobytes()
     doc.close()
 
-    spans = [s for b in inspect_document(data)["pages"][0]["blocks"]
-             for ln in b["lines"] for s in ln["spans"]]
+    spans = [
+        s
+        for b in inspect_document(data)["pages"][0]["blocks"]
+        for ln in b["lines"]
+        for s in ln["spans"]
+    ]
     by_text = {s["text"]: s for s in spans}
     assert by_text["INVISIBLE"]["hidden"] is True
     assert by_text["VISIBLE"]["hidden"] is False
@@ -60,8 +67,13 @@ def test_inspect_reports_invisible_text():
 def test_inspect_reports_links_and_images():
     doc = fitz.open()
     page = doc.new_page()
-    page.insert_link({"kind": fitz.LINK_URI, "from": fitz.Rect(10, 10, 60, 30),
-                      "uri": "https://exemple.test/eleve"})
+    page.insert_link(
+        {
+            "kind": fitz.LINK_URI,
+            "from": fitz.Rect(10, 10, 60, 30),
+            "uri": "https://exemple.test/eleve",
+        }
+    )
     pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 8, 8), False)
     pix.clear_with(120)
     page.insert_image(fitz.Rect(100, 100, 200, 200), pixmap=pix)
@@ -94,6 +106,7 @@ def test_inspect_is_read_only(client):
     sid = open_doc(client, original)
     client.get(f"/api/inspect/{sid}")
     from src.app import DOCS
+
     assert DOCS[sid]["bytes"] == original
 
 

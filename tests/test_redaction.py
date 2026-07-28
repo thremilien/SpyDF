@@ -7,6 +7,8 @@ of the result — not in the extracted text, which is exactly what made the
 original leaks invisible.
 """
 
+import contextlib
+
 import fitz
 import pytest
 from fastapi.testclient import TestClient
@@ -18,21 +20,21 @@ ZONE = (50, 80, 260, 175)
 
 # Marqueurs qui doivent avoir disparu, et ou ils sont places dans le PDF source.
 SECRETS = [
-    "SECRETNAMEALPHA",    # texte
-    "ANNOTBODYGAMMA",     # corps d'une annotation
-    "ANNOTAUTHORDELTA",   # auteur de l'annotation (/T)
-    "FIELDNAMEEPSILON",   # nom d'un champ de formulaire
-    "FIELDVALUEZETA",     # valeur du champ
-    "TOCNAMEETA",         # signet ("Copie de ...")
-    "ATTACHNAMETHETA",    # piece jointe
+    "SECRETNAMEALPHA",  # texte
+    "ANNOTBODYGAMMA",  # corps d'une annotation
+    "ANNOTAUTHORDELTA",  # auteur de l'annotation (/T)
+    "FIELDNAMEEPSILON",  # nom d'un champ de formulaire
+    "FIELDVALUEZETA",  # valeur du champ
+    "TOCNAMEETA",  # signet ("Copie de ...")
+    "ATTACHNAMETHETA",  # piece jointe
     "ATTACHDATAIOTA",
-    "LAYERNAMEKAPPA",     # nom de calque dans /OCProperties
-    "METAAUTHORLAMBDA",   # metadonnees
+    "LAYERNAMEKAPPA",  # nom de calque dans /OCProperties
+    "METAAUTHORLAMBDA",  # metadonnees
     "METATITLEMU",
-    "XMPMARKERNU",        # XMP
+    "XMPMARKERNU",  # XMP
 ]
 
-PUBLIC = "PUBLICTEXTBETA"   # hors zone: doit survivre
+PUBLIC = "PUBLICTEXTBETA"  # hors zone: doit survivre
 
 
 @pytest.fixture
@@ -74,7 +76,7 @@ def build_pdf() -> bytes:
         '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF '
         'xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
         "<rdf:Description>XMPMARKERNU</rdf:Description>"
-        "</rdf:RDF></x:xmpmeta><?xpacket end=\"w\"?>"
+        '</rdf:RDF></x:xmpmeta><?xpacket end="w"?>'
     )
 
     out = doc.tobytes()
@@ -89,10 +91,8 @@ def every_byte(pdf: bytes) -> bytes:
     doc = fitz.open(stream=pdf, filetype="pdf")
     try:
         for xref in range(1, doc.xref_length()):
-            try:
+            with contextlib.suppress(Exception):
                 chunks.append(doc.xref_object(xref, compressed=False).encode("utf-8", "replace"))
-            except Exception:
-                pass
             try:
                 if doc.xref_is_stream(xref):
                     chunks.append(doc.xref_stream(xref))
@@ -115,10 +115,15 @@ def rect_points(rect):
 
 
 def export(client, sid, zones, deleted_pages=(), strip_meta=True):
-    r = client.post("/api/export", json={
-        "sid": sid, "zones": zones,
-        "deleted_pages": list(deleted_pages), "strip_meta": strip_meta,
-    })
+    r = client.post(
+        "/api/export",
+        json={
+            "sid": sid,
+            "zones": zones,
+            "deleted_pages": list(deleted_pages),
+            "strip_meta": strip_meta,
+        },
+    )
     assert r.status_code == 200, r.text
     body = r.json()
     dl = client.get(body["download"])
@@ -229,7 +234,7 @@ def test_polygon_on_a_scan_does_not_whiten_its_bounding_box(client):
 
     chk = fitz.open(stream=out, filetype="pdf")
     try:
-        pm = chk[0].get_pixmap()          # page A4 rendue a l'echelle 1
+        pm = chk[0].get_pixmap()  # page A4 rendue a l'echelle 1
         # (70, 130): dans le rectangle englobant, hors du triangle
         assert pm.pixel(70, 130) == (90, 90, 90)
         # (230, 80): franchement a l'interieur du triangle
@@ -250,8 +255,8 @@ def test_pixelated_polygon_mosaic_stays_inside_the_outline():
         j = int((y - rect.y0) / rect.height * mask.height)
         return mask.pixel(i, j)[0]
 
-    assert at(230, 70) == 255      # dans le triangle: la mosaique s'affiche
-    assert at(70, 130) == 0        # dans le rectangle, hors du triangle: transparent
+    assert at(230, 70) == 255  # dans le triangle: la mosaique s'affiche
+    assert at(70, 130) == 0  # dans le rectangle, hors du triangle: transparent
     assert at(390, 130) == 0
 
 
@@ -294,9 +299,9 @@ def test_deleted_page_is_gone_and_zones_still_map(client):
 
     assert body["leak_count"] == 0, body["leaks"]
     haystack = every_byte(out)
-    assert b"PAGEMARKER0" not in haystack   # page supprimee
-    assert b"PAGEMARKER2" not in haystack   # page 2 redigee (devenue page 1)
-    assert b"PAGEMARKER1" in haystack       # page intacte
+    assert b"PAGEMARKER0" not in haystack  # page supprimee
+    assert b"PAGEMARKER2" not in haystack  # page 2 redigee (devenue page 1)
+    assert b"PAGEMARKER1" in haystack  # page intacte
 
     chk = fitz.open(stream=out, filetype="pdf")
     try:
@@ -350,14 +355,14 @@ def test_verify_catches_text_annotations_and_fields():
     zone = _zone(fitz.Rect(50, 80, 300, 140))
     leaks = _verify(_doc_with_survivors(), {0: [zone]}, {0: 0})
 
-    kinds = {l["kind"] for l in leaks}
+    kinds = {lk["kind"] for lk in leaks}
     assert kinds == {"texte", "annotation", "champ"}, leaks
     # get_text("words") peut souder le mot a la valeur du champ voisin
-    texts = " ".join(l["text"] for l in leaks)
+    texts = " ".join(lk["text"] for lk in leaks)
     assert "STILLHERE" in texts
     assert "AUTEURRESTANT" in texts
     assert "CHAMPRESTANT" in texts
-    assert all(l["page"] == 1 for l in leaks)
+    assert all(lk["page"] == 1 for lk in leaks)
 
 
 def test_verify_reports_the_page_number_of_the_exported_file():
@@ -366,7 +371,7 @@ def test_verify_reports_the_page_number_of_the_exported_file():
     zone = _zone(fitz.Rect(50, 80, 300, 140))
     # zone posee sur la page 4 d'origine, devenue la page 1 (index 0) a l'export
     leaks = _verify(_doc_with_survivors(), {3: [zone]}, {3: 0})
-    assert leaks and all(l["page"] == 1 for l in leaks)
+    assert leaks and all(lk["page"] == 1 for lk in leaks)
 
     # page disparue du document exporte: rien a verifier, et surtout pas de plantage
     assert _verify(_doc_with_survivors(), {3: [zone]}, {}) == []
@@ -417,9 +422,12 @@ def test_download_headers_are_safe(client):
 
 def test_filename_is_sanitised(client):
     data = build_pdf()
-    r = client.post("/api/open", files={
-        "file": ('../../etc/pa"ss\r\nwd.pdf', data, "application/pdf"),
-    })
+    r = client.post(
+        "/api/open",
+        files={
+            "file": ('../../etc/pa"ss\r\nwd.pdf', data, "application/pdf"),
+        },
+    )
     assert r.status_code == 200
     name = r.json()["name"]
     assert "/" not in name and '"' not in name and "\r" not in name and "\n" not in name

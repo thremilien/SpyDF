@@ -29,7 +29,8 @@ _configured = False  # protege contre les handlers en double si on appelle
 
 def _resolve_level(raw: str) -> int:
     """Nom de niveau insensible a la casse; une valeur farfelue retombe sur
-    INFO plutot que de faire planter le demarrage."""
+    INFO plutot que de faire planter le demarrage.
+    """
     name = (raw or DEFAULT_LEVEL).strip().upper()
     level = logging.getLevelName(name)
     return level if isinstance(level, int) else logging.INFO
@@ -38,7 +39,8 @@ def _resolve_level(raw: str) -> int:
 def setup_logging() -> logging.Logger:
     """Configure le logger "spydf": un handler stderr toujours present, et un
     handler fichier optionnel si SPYDF_LOG_FILE est defini. Idempotent: un
-    second appel ne double pas les lignes."""
+    second appel ne double pas les lignes.
+    """
     global _configured
     logger = logging.getLogger(LOGGER_NAME)
     logger.setLevel(_resolve_level(os.environ.get("SPYDF_LOG_LEVEL")))
@@ -52,8 +54,7 @@ def setup_logging() -> logging.Logger:
         if isinstance(h, logging.NullHandler):
             logger.removeHandler(h)
 
-    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s",
-                            datefmt="%Y-%m-%d %H:%M:%S")
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
     stream_handler = logging.StreamHandler(sys.stderr)
     stream_handler.setFormatter(fmt)
@@ -63,15 +64,14 @@ def setup_logging() -> logging.Logger:
     if log_file:
         try:
             file_handler = logging.handlers.RotatingFileHandler(
-                log_file, maxBytes=1 * 1024 * 1024, backupCount=3,
-                encoding="utf-8")
+                log_file, maxBytes=1 * 1024 * 1024, backupCount=3, encoding="utf-8"
+            )
             file_handler.setFormatter(fmt)
             logger.addHandler(file_handler)
         except OSError as e:
             # un souci de logging ne doit jamais empecher l'appli de servir:
             # on avertit sur stderr et on continue avec stderr seul.
-            print(f"spydf: impossible d'ouvrir SPYDF_LOG_FILE={log_file!r}: {e}",
-                  file=sys.stderr)
+            print(f"spydf: impossible d'ouvrir SPYDF_LOG_FILE={log_file!r}: {e}", file=sys.stderr)
 
     logger.propagate = False
     _configured = True
@@ -86,7 +86,8 @@ def _fmt_value(value) -> str:
     valeur contenant un espace ou un saut de ligne entre guillemets avec les
     guillemets et sauts de ligne internes neutralises — une valeur ne doit
     jamais pouvoir fabriquer une fausse seconde ligne de log (injection de
-    log)."""
+    log).
+    """
     if isinstance(value, bool):
         return "true" if value else "false"
     text = str(value)

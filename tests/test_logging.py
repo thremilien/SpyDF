@@ -54,7 +54,7 @@ def test_get_root_logs_a_connection_event_with_ip(client, caplog):
     caplog.set_level(logging.INFO, logger=LOGGER_NAME)
     r = client.get("/")
     assert r.status_code == 200
-    lines = [l.message for l in caplog.records if "event=connect" in l.message]
+    lines = [lk.message for lk in caplog.records if "event=connect" in lk.message]
     assert len(lines) == 1
     assert "ip=" in lines[0]
 
@@ -66,12 +66,15 @@ def test_import_logs_size_and_pages_but_never_the_filename(client, caplog, monke
     monkeypatch.delenv("SPYDF_LOG_FILENAMES", raising=False)
     caplog.set_level(logging.INFO, logger=LOGGER_NAME)
     data = build_pdf()
-    r = client.post("/api/open", files={
-        "file": ("copie_jean_dupont.pdf", data, "application/pdf"),
-    })
+    r = client.post(
+        "/api/open",
+        files={
+            "file": ("copie_jean_dupont.pdf", data, "application/pdf"),
+        },
+    )
     assert r.status_code == 200
 
-    text = "\n".join(l.message for l in caplog.records)
+    text = "\n".join(lk.message for lk in caplog.records)
     assert "event=import " in text or text.endswith("event=import")
     assert f"size={len(data)}" in text
     assert "pages=1" in text
@@ -85,12 +88,15 @@ def test_filenames_appear_only_when_opted_in(client, caplog, monkeypatch):
     monkeypatch.setenv("SPYDF_LOG_FILENAMES", "1")
     caplog.set_level(logging.INFO, logger=LOGGER_NAME)
     data = build_pdf()
-    r = client.post("/api/open", files={
-        "file": ("copie_jean_dupont.pdf", data, "application/pdf"),
-    })
+    r = client.post(
+        "/api/open",
+        files={
+            "file": ("copie_jean_dupont.pdf", data, "application/pdf"),
+        },
+    )
     assert r.status_code == 200
 
-    text = "\n".join(l.message for l in caplog.records)
+    text = "\n".join(lk.message for lk in caplog.records)
     # SPYDF_LOG_FILENAMES est lu au moment de l'appel (pas a l'import du
     # module), donc le monkeypatch ci-dessus suffit sans recharger src.app.
     assert "filename=copie_jean_dupont.pdf" in text
@@ -101,9 +107,9 @@ def test_rejected_upload_logs_a_warning(client, caplog):
     r = client.post("/api/open", files={"file": ("x.pdf", b"not a pdf", "application/pdf")})
     assert r.status_code == 400
 
-    warnings = [l for l in caplog.records if l.levelno == logging.WARNING]
-    assert any("event=import_rejected" in l.message for l in warnings)
-    assert any("reason=unreadable" in l.message for l in warnings)
+    warnings = [lk for lk in caplog.records if lk.levelno == logging.WARNING]
+    assert any("event=import_rejected" in lk.message for lk in warnings)
+    assert any("reason=unreadable" in lk.message for lk in warnings)
 
 
 # ---------------------------------------------------------------- export
@@ -129,7 +135,7 @@ def test_export_logs_leak_count_never_leak_text(client, caplog, monkeypatch):
     assert r.status_code == 200
     assert r.json()["leak_count"] == 2
 
-    text = "\n".join(l.message for l in caplog.records)
+    text = "\n".join(lk.message for lk in caplog.records)
     assert "leaks=2" in text
     assert leak_marker not in text
 
@@ -141,12 +147,18 @@ def test_export_with_watermark_logs_flag_never_text(client, caplog):
     caplog.set_level(logging.INFO, logger=LOGGER_NAME)
     sid = open_doc(client, build_pdf())
     zones = {"0": [{"type": "rect", "points": rect_points(ZONE), "mode": "delete"}]}
-    r = client.post("/api/export", json={
-        "sid": sid, "zones": zones, "deleted_pages": [], "watermark": watermark_text,
-    })
+    r = client.post(
+        "/api/export",
+        json={
+            "sid": sid,
+            "zones": zones,
+            "deleted_pages": [],
+            "watermark": watermark_text,
+        },
+    )
     assert r.status_code == 200
 
-    text = "\n".join(l.message for l in caplog.records)
+    text = "\n".join(lk.message for lk in caplog.records)
     assert "watermark=true" in text
     assert watermark_text not in text
 
@@ -160,7 +172,7 @@ def test_export_success_event_is_logged(client, caplog):
     r = client.post("/api/export", json={"sid": sid, "zones": zones, "deleted_pages": []})
     assert r.status_code == 200
 
-    exports = [l.message for l in caplog.records if l.message.startswith("event=export ")]
+    exports = [lk.message for lk in caplog.records if lk.message.startswith("event=export ")]
     assert len(exports) == 1
     assert "strip_meta=true" in exports[0]
     assert "out_bytes=" in exports[0]
@@ -183,7 +195,7 @@ def test_export_refusals_are_logged_at_warning(client, caplog):
     r = client.post("/api/export", json={"sid": sid, "zones": {}, "deleted_pages": [0]})
     assert r.status_code == 400
 
-    warnings = [l.message for l in caplog.records if l.levelno == logging.WARNING]
+    warnings = [lk.message for lk in caplog.records if lk.levelno == logging.WARNING]
     assert any("reason=unknown_session" in m for m in warnings)
     assert any("reason=nothing_to_do" in m for m in warnings)
     assert any("reason=all_pages_deleted" in m for m in warnings)
@@ -196,7 +208,7 @@ def test_full_session_id_never_logged_only_a_prefix(client, caplog):
     r = client.post("/api/export", json={"sid": sid, "zones": zones, "deleted_pages": []})
     assert r.status_code == 200
 
-    text = "\n".join(l.message for l in caplog.records)
+    text = "\n".join(lk.message for lk in caplog.records)
     assert sid not in text
     assert sid[:8] in text
 
@@ -213,12 +225,11 @@ def test_setup_logging_twice_does_not_duplicate_lines(clean_logging_state, monke
     logs_module.setup_logging()  # deuxieme appel: ne doit rien ajouter
 
     logger = logging.getLogger(LOGGER_NAME)
-    stream_handlers = [h for h in logger.handlers
-                        if type(h) is logging.StreamHandler]
+    stream_handlers = [h for h in logger.handlers if type(h) is logging.StreamHandler]
     assert len(stream_handlers) == 1
 
     logs_module.log_event("test_idempotent")
-    lines = [l for l in buf.getvalue().splitlines() if "event=test_idempotent" in l]
+    lines = [lk for lk in buf.getvalue().splitlines() if "event=test_idempotent" in lk]
     assert len(lines) == 1
 
 
@@ -236,8 +247,9 @@ def test_log_file_env_var_really_writes_events(clean_logging_state, monkeypatch,
     assert "foo=bar" in content
 
 
-def test_unwritable_log_file_path_warns_but_does_not_raise(clean_logging_state, monkeypatch,
-                                                             tmp_path, capsys):
+def test_unwritable_log_file_path_warns_but_does_not_raise(
+    clean_logging_state, monkeypatch, tmp_path, capsys
+):
     bad_path = tmp_path / "no_such_directory" / "spydf.log"
     monkeypatch.setenv("SPYDF_LOG_FILE", str(bad_path))
 

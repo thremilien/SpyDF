@@ -14,7 +14,7 @@ PORT = int(os.environ.get("PORT", 8765))
 
 def main():
     url = f"http://127.0.0.1:{PORT}"
-    print(f"PDF Redact -> {url}")
+    print(f"SpyDF -> {url}")
     if HOST == "127.0.0.1":
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     uvicorn.run(app, host=HOST, port=PORT, log_level="warning")

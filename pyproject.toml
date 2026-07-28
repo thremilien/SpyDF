@@ -1,5 +1,5 @@
 [project]
-name = "examanonymizer"
+name = "spydf"
 version = "0.1.0"
 description = "Local webapp to redact (truly remove, not just cover) text/regions from PDF exams."
 readme = "README.md"

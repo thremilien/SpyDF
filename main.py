@@ -1,4 +1,4 @@
-"""Local PDF redaction webapp.
+"""SpyDF — local PDF redaction webapp.
 
     uv run main.py
 

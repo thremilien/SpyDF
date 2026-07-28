@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A local FastAPI webapp for redacting PDFs (e.g. exam scans): the user draws
+SpyDF — a local FastAPI webapp for redacting PDFs (e.g. exam scans): the user draws
 rectangles over regions in the browser, and export uses PyMuPDF's
 `apply_redactions` to actually delete the underlying text/image objects in
 those zones — not just draw a box over them. Everything runs in-memory,

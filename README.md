@@ -1,4 +1,4 @@
-# ExamAnonymizer
+# SpyDF
 
 Local webapp to redact PDF exams: draw zones over regions to remove (names,
 student IDs, ...), and export a PDF where the underlying text, image and
@@ -80,6 +80,6 @@ any decompressed stream of the result.
 ## Docker
 
 ```bash
-docker build -t examanonymizer .
-docker run --rm -p 8765:8765 examanonymizer
+docker build -t spydf .
+docker run --rm -p 8765:8765 spydf
 ```

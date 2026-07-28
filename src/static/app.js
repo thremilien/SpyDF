@@ -17,6 +17,12 @@ const pageEls = [];
 
 const pagesEl = $('pages'), menu = $('zoneMenu');
 
+// Points d'accroche du panneau d'inspection (inspector.js, charge ensuite).
+// Definis ici en no-op pour que l'application reste autonome sans lui.
+let onDocumentOpened = () => {};
+let onZonesChanged = () => {};
+let onActivePageChanged = () => {};
+
 const ICON_TRASH = '<svg viewBox="0 0 18 18" fill="none"><path d="M4 5.5h10M7.5 5.5V4a1 1 0 011-1h1a1 1 0 011 1v1.5M5.5 5.5l.6 8a1 1 0 001 .9h3.8a1 1 0 001-.9l.6-8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_RESTORE = '<svg viewBox="0 0 18 18" fill="none"><path d="M4 8h7a3.5 3.5 0 010 7H8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M6.5 5L4 8l2.5 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
@@ -142,6 +148,7 @@ async function openFile(f) {
   $('drop').hidden = true; pagesEl.hidden = false;
   setStatus(`Rendu de la page 1 sur ${pages.length}…`, 'busy-text');
   buildPages();
+  onDocumentOpened(sid);
   awaitFirstPage();
 }
 
@@ -238,6 +245,7 @@ function togglePageDeleted(i) {
   if (deletedPages.has(i)) deletedPages.delete(i); else deletedPages.add(i);
   if (selected && selected.page === i) { selected = null; closeMenu(); }
   syncDeletedUI(); renderZones(i); updateStatus();
+  onZonesChanged(i);
 }
 
 function syncDeletedUI() {
@@ -259,6 +267,7 @@ const activeObserver = new IntersectionObserver(entries => {
     if (en.isIntersecting && en.intersectionRatio >= 0.5) {
       activePage = +en.target.dataset.page;
       updateStatus();
+      onActivePageChanged(activePage);
     }
   });
 }, { threshold: [0.5] });
@@ -410,6 +419,7 @@ function renderZones(i) {
   if (selEl && keyboardNav && !menu.contains(document.activeElement)) {
     selEl.focus({ preventScroll: true });
   }
+  onZonesChanged(i);
 }
 
 function select(i, idx) {

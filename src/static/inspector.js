@@ -186,6 +186,44 @@ function emptyNote(parent, text) {
   parent.append(el('p', 'ins-none', text));
 }
 
+// ---------- acting on a cover ----------
+// A cover is the file's own content, not a zone: it cannot be moved, resized or
+// deleted from here, and the pane still changes nothing. What it can do is hand
+// you a zone over it — one click and it is an ordinary zone on the left, edited
+// and undone like any other, which is what actually destroys the pixels.
+const COVER_ZONE_MARGIN = 1;   // pt, so nothing peeks out from under the edge
+const COVER_TIP = 'Click to redact this area for real: it becomes a zone on the '
+  + 'left, movable and undoable like any other.';
+
+function colorName(rgb) {
+  if (!rgb || rgb.length < 3) return 'opaque';
+  if (rgb.every(c => c > 0.95)) return 'white';
+  if (rgb.every(c => c < 0.05)) return 'black';
+  return 'opaque';
+}
+
+function coverZone(c) {
+  if (deletedPages.has(c.n) || coveredBy(c.n, c.rect)) return;   // nothing left to do
+  const m = COVER_ZONE_MARGIN;
+  const [x0, y0, x1, y1] = c.rect;
+  addZone(c.n, {
+    type: 'rect',
+    points: [[x0 - m, y0 - m], [x1 + m, y0 - m], [x1 + m, y1 + m], [x0 - m, y1 + m]],
+    mode: 'delete',
+  });
+}
+
+function makeCoverAction(target, c) {
+  target.setAttribute('role', 'button');
+  target.setAttribute('tabindex', '0');
+  target.setAttribute('aria-label', `Redact the covered area on page ${c.n + 1}`);
+  target.style.cursor = 'pointer';
+  target.addEventListener('click', () => coverZone(c));
+  target.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); coverZone(c); }
+  });
+}
+
 // ---------- the column: what has no position on any page ----------
 function buildRail(d, pagesData) {
   insRail.textContent = '';
@@ -210,6 +248,21 @@ function buildRail(d, pagesData) {
     row(xmp, 'XMP block', d.xmp.slice(0, 400) + (d.xmp.length > 400 ? '…' : ''),
       { rule: 'meta', page: null, notable: true });
   } else emptyNote(xmp, 'None.');
+
+  // Listed, not only drawn on the pages: the summary says the kept items are
+  // "marked below", and a cover is exactly the item you would go looking for.
+  const covers = pagesData.flatMap(p => (p.covers || []).map(c => ({ ...c, n: p.n })));
+  const cov = section(insRail, 'Opaque covers', covers.length);
+  if (covers.length) {
+    covers.forEach(c => {
+      const [x0, y0, x1, y1] = c.rect;
+      const r = row(cov, `p. ${c.n + 1}`,
+        `${Math.round(x1 - x0)} × ${Math.round(y1 - y0)} pt, ${colorName(c.color)}`,
+        { rule: 'cover', page: c.n, rect: c.rect, notable: true });
+      r.title = COVER_TIP;
+      makeCoverAction(r, c);
+    });
+  } else emptyNote(cov, 'None.');
 
   // Attached to a page, but nowhere on it: it lives in the structure tree, so
   // it is listed here rather than drawn on the ghost. A scanned page whose only
@@ -358,9 +411,11 @@ function buildGhost(p) {
   (p.covers || []).forEach(c => {
     const g = boxNode(c.rect, 'ig-cover',
       'Opaque rectangle over the image: it hides what is underneath, it does not '
-      + 'remove it. Draw a zone here to destroy those pixels.');
+      + 'remove it. ' + COVER_TIP);
     svg.append(g);
-    addItem({ rule: 'cover', page: p.n, rect: c.rect, el: g, chip: null, notable: true });
+    makeCoverAction(g, { ...c, n: p.n });
+    // counted once, in the rail: the same cover has a row there
+    addItem({ rule: 'cover', page: p.n, rect: c.rect, el: g, chip: null, notable: false });
   });
 
   cont.append(svg, tab);

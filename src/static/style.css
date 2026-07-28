@@ -364,6 +364,11 @@ header {
 .ins-value { color: var(--ink); overflow-wrap: anywhere; }
 .ins-row.is-gone .ins-value { color: var(--ink-faint); text-decoration: line-through; }
 
+/* a row that does something when clicked (a cover: it hands you a zone) */
+.ins-row[role="button"]:hover { background: var(--accent-soft); }
+.ins-row[role="button"]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.ig-cover:hover .ig-box { fill-opacity: .26; }
+
 .ins-chip {
   font-size: 10px; font-weight: 600; letter-spacing: .02em; white-space: nowrap;
   border-radius: 20px; padding: 2px 8px; border: 1px solid transparent;

@@ -11,6 +11,8 @@ let pending = null;       // polygone en cours de tracé
 let deletedPages = new Set();
 let history = [];         // instantanés JSON pour l'annulation
 let redoStack = [];
+let busy = false;         // une requête réseau est en cours
+let keyboardNav = false;  // la sélection vient du clavier: on lui rend le focus
 const pageEls = [];
 
 const pagesEl = $('pages'), menu = $('zoneMenu');
@@ -26,6 +28,27 @@ const BOX_HANDLES = [
 ];
 const CORNER_HANDLES = BOX_HANDLES.filter(h => h[0].length === 2);
 
+// ---------- barre d'état ----------
+// Un seul point d'entrée: les messages transitoires (progression, erreur,
+// résultat d'export) ne doivent pas être écrasés par le résumé des zones.
+function setStatus(text, cls) {
+  const el = $('status');
+  el.textContent = '';
+  const span = document.createElement('span');
+  if (cls) span.className = cls;
+  span.textContent = text;
+  el.appendChild(span);
+}
+
+function setBusy(on, text) {
+  busy = on;
+  $('busybar').hidden = !on;
+  document.body.classList.toggle('busy', on);
+  $('openBtn').disabled = on;
+  if (text) setStatus(text, 'busy-text');
+  syncButtons();
+}
+
 // ---------- historique ----------
 // Instantanés complets: tout passe par pushHistory() AVANT mutation, donc
 // tracé, déplacement, redimensionnement, mode, suppression de zone ou de page
@@ -34,7 +57,7 @@ function snapshot() { return JSON.stringify({ z: zones, d: [...deletedPages] });
 function restore(s) {
   const d = JSON.parse(s);
   zones = d.z; deletedPages = new Set(d.d);
-  selected = null; menu.hidden = true;
+  selected = null; closeMenu();
   renderAll(); syncDeletedUI(); updateStatus();
 }
 function pushHistory() {
@@ -62,25 +85,86 @@ function redo() {
 }
 
 // ---------- ouverture ----------
-async function openFile(f) {
-  if (!f) return;
-  if (f.type !== 'application/pdf' && !f.name.toLowerCase().endsWith('.pdf')) {
-    alert("Ce fichier n'est pas un PDF.");
-    return;
-  }
-  const fd = new FormData();
-  fd.append('file', f);
-  const r = await fetch('/api/open', { method: 'POST', body: fd });
-  if (!r.ok) { alert('Erreur : ' + await r.text()); return; }
-  const d = await r.json();
-  sid = d.sid; pages = d.pages;
-  zones = {}; history = []; activePage = 0; selected = null; deletedPages = new Set();
-  $('drop').hidden = true; pagesEl.hidden = false;
-  buildPages();
-  updateStatus();
+// fetch() ne sait pas rapporter la progression d'un envoi: sur un PDF de
+// plusieurs dizaines de Mo l'interface resterait muette pendant tout l'upload.
+function uploadPdf(f, onProgress) {
+  return new Promise((resolve, reject) => {
+    const fd = new FormData();
+    fd.append('file', f);
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/open');
+    xhr.responseType = 'text';
+    xhr.upload.onprogress = e => {
+      if (e.lengthComputable) onProgress(e.loaded / e.total);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try { resolve(JSON.parse(xhr.responseText)); }
+        catch { reject(new Error('réponse illisible du serveur')); }
+      } else {
+        reject(new Error(xhr.responseText || `erreur ${xhr.status}`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('serveur injoignable'));
+    xhr.onabort = () => reject(new Error('envoi interrompu'));
+    xhr.send(fd);
+  });
 }
 
-$('file').onchange = e => openFile(e.target.files[0]);
+async function openFile(f) {
+  if (!f) return;
+  if (busy) return;
+  if (f.type !== 'application/pdf' && !f.name.toLowerCase().endsWith('.pdf')) {
+    setStatus("Ce fichier n'est pas un PDF.", 'warn');
+    return;
+  }
+  setBusy(true, `Envoi de « ${f.name} »…`);
+  let d;
+  try {
+    d = await uploadPdf(f, ratio => {
+      setStatus(ratio < 1
+        ? `Envoi de « ${f.name} » — ${Math.round(ratio * 100)} %`
+        : 'Analyse du document…', 'busy-text');
+    });
+  } catch (err) {
+    setBusy(false);
+    setStatus('Erreur : ' + err.message, 'warn');
+    updateStatus();
+    return;
+  }
+
+  sid = d.sid; pages = d.pages;
+  // redoStack faisait autrefois partie de l'oubli: Ctrl+Y recollait alors des
+  // zones du document précédent sur le nouveau.
+  zones = {}; history = []; redoStack = [];
+  activePage = 0; selected = null; deletedPages = new Set();
+  cancelPending();
+  $('drop').hidden = true; pagesEl.hidden = false;
+  setStatus(`Rendu de la page 1 sur ${pages.length}…`, 'busy-text');
+  buildPages();
+  awaitFirstPage();
+}
+
+// La première image peut mettre plusieurs secondes: on ne rend la main
+// (et la barre d'état) qu'une fois la page réellement affichée.
+function awaitFirstPage() {
+  const pe = pageEls[0];
+  if (!pe) { setBusy(false); updateStatus(); return; }
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    setBusy(false);
+    updateStatus();
+  };
+  const timer = setTimeout(finish, 15000);   // filet de sécurité
+  pe.img.addEventListener('load', finish, { once: true });
+  pe.img.addEventListener('error', finish, { once: true });
+  if (pe.img.complete && pe.img.naturalWidth) finish();
+}
+
+$('file').onchange = e => { openFile(e.target.files[0]); e.target.value = ''; };
 
 const stageEl = $('stage');
 let dragDepth = 0;
@@ -120,6 +204,7 @@ function buildPages() {
 
     const img = document.createElement('img');
     img.className = 'page-img';
+    img.alt = `Page ${i + 1}`;
 
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('class', 'page-layer');
@@ -151,7 +236,7 @@ function buildPages() {
 function togglePageDeleted(i) {
   pushHistory();
   if (deletedPages.has(i)) deletedPages.delete(i); else deletedPages.add(i);
-  if (selected && selected.page === i) { selected = null; menu.hidden = true; }
+  if (selected && selected.page === i) { selected = null; closeMenu(); }
   syncDeletedUI(); renderZones(i); updateStatus();
 }
 
@@ -236,19 +321,49 @@ function edgesFrom(name, bb, p) {
   return [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)];
 }
 
-function startDrag(onMove, onEnd) {
-  const move = e => onMove(e);
-  const up = e => {
-    window.removeEventListener('mousemove', move);
-    window.removeEventListener('mouseup', up);
-    if (onEnd) onEnd(e);
+// Pointer events (et non mouse): souris, stylet et doigt passent par le même
+// chemin. `pointercancel` arrive quand le navigateur reprend le geste pour
+// faire défiler la page — le tracé en cours doit alors être abandonné.
+function startDrag(ev, onMove, onEnd) {
+  const id = ev.pointerId;
+  const move = e => { if (e.pointerId === id) onMove(e); };
+  const stop = cancelled => e => {
+    if (e.pointerId !== id) return;
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+    window.removeEventListener('pointercancel', cancel);
+    if (onEnd) onEnd(e, cancelled);
   };
-  window.addEventListener('mousemove', move);
-  window.addEventListener('mouseup', up);
+  const up = stop(false), cancel = stop(true);
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+  window.addEventListener('pointercancel', cancel);
 }
 
 // ---------- rendu des zones ----------
 function renderAll() { pageEls.forEach((_, i) => renderZones(i)); }
+
+function modeLabel(mode) { return mode === 'pixelate' ? 'repixelisation' : 'suppression'; }
+
+function zoneLabel(z, i, idx) {
+  const base = `Zone ${idx + 1}, page ${i + 1}, ${modeLabel(z.mode)}`;
+  return z.type === 'rect'
+    ? base
+    : `${base}. La suppression porte sur le rectangle englobant en pointillés.`;
+}
+
+// Le contour dessiné n'est pas ce qui est effacé: PyMuPDF ne sait rédiger que
+// des rectangles, donc une zone non rectangulaire détruit tout son rectangle
+// englobant. On le montre en pointillés pour que ce qui disparaît soit visible.
+function appendBBox(svg, z, isSel) {
+  const [x0, y0, x1, y1] = bbox(z.points);
+  const r = document.createElementNS(svg.namespaceURI, 'rect');
+  r.setAttribute('x', x0); r.setAttribute('y', y0);
+  r.setAttribute('width', Math.max(x1 - x0, 0));
+  r.setAttribute('height', Math.max(y1 - y0, 0));
+  r.setAttribute('class', `zone-bbox zone-bbox-${z.mode}` + (isSel ? ' selected' : ''));
+  svg.appendChild(r);
+}
 
 function renderZones(i) {
   const pe = pageEls[i];
@@ -257,23 +372,73 @@ function renderZones(i) {
   svg.textContent = '';
   const list = zones[i] || [];
   const locked = deletedPages.has(i);
+  let selEl = null;
 
   list.forEach((z, idx) => {
     const isSel = !locked && selected && selected.page === i && selected.index === idx;
+    if (z.type !== 'rect') appendBBox(svg, z, isSel);
+
     const poly = document.createElementNS(svg.namespaceURI, 'polygon');
     poly.setAttribute('points', z.points.map(p => p.join(',')).join(' '));
     poly.setAttribute('class', `zone zone-${z.mode}` + (isSel ? ' selected' : ''));
+    poly.dataset.idx = idx;
     if (!locked) {
-      poly.addEventListener('mousedown', ev => beginZoneDrag(ev, i, idx));
+      poly.setAttribute('tabindex', '0');
+      poly.setAttribute('role', 'button');
+      poly.setAttribute('aria-label', zoneLabel(z, i, idx));
+      poly.addEventListener('pointerdown', ev => beginZoneDrag(ev, i, idx));
       poly.addEventListener('contextmenu', ev => {
         ev.preventDefault(); ev.stopPropagation();
-        selected = { page: i, index: idx };
-        renderZones(i); openMenu(ev, z);
+        keyboardNav = false;
+        select(i, idx);
+        showMenu(ev.clientX, ev.clientY, z, false);
       });
+      poly.addEventListener('focus', () => {
+        if (!selected || selected.page !== i || selected.index !== idx) {
+          keyboardNav = true;
+          select(i, idx);
+        }
+      });
+      poly.addEventListener('keydown', ev => zoneKeydown(ev, i, idx, z));
+      if (isSel) selEl = poly;
     }
     svg.appendChild(poly);
     if (isSel) renderHandles(svg, i, idx, z);
   });
+
+  // le re-rendu détruit l'élément focalisé: on lui rend le focus
+  if (selEl && keyboardNav && !menu.contains(document.activeElement)) {
+    selEl.focus({ preventScroll: true });
+  }
+}
+
+function select(i, idx) {
+  selected = { page: i, index: idx };
+  renderZones(i);
+  updateStatus();
+}
+
+function selectedEl() {
+  if (!selected) return null;
+  const pe = pageEls[selected.page];
+  return pe ? pe.svg.querySelector(`.zone[data-idx="${selected.index}"]`) : null;
+}
+
+// Le menu contextuel était la seule voie vers le changement de mode: sans
+// souris (ou sans clic droit) la zone n'était plus modifiable du tout.
+function zoneKeydown(ev, i, idx, z) {
+  const k = ev.key;
+  if (k === 'Enter' || k === ' ' || k === 'ContextMenu' || (k === 'F10' && ev.shiftKey)) {
+    ev.preventDefault(); ev.stopPropagation();
+    keyboardNav = true;
+    select(i, idx);
+    openMenuOnZone(z);
+    return;
+  }
+  if (k === 'Delete' || k === 'Backspace') {
+    ev.preventDefault(); ev.stopPropagation();
+    deleteSelected();
+  }
 }
 
 function renderHandles(svg, i, idx, z) {
@@ -287,7 +452,7 @@ function renderHandles(svg, i, idx, z) {
       c.setAttribute('rx', hw / 2); c.setAttribute('ry', hh / 2);
       c.setAttribute('class', 'handle handle-vertex');
       c.style.cursor = 'grab';
-      c.addEventListener('mousedown', ev => beginVertexDrag(ev, i, idx, vi));
+      c.addEventListener('pointerdown', ev => beginVertexDrag(ev, i, idx, vi));
       c.addEventListener('dblclick', ev => {
         ev.preventDefault(); ev.stopPropagation();
         if (z.points.length <= 3) return;   // un polygone garde 3 sommets mini
@@ -311,18 +476,19 @@ function renderHandles(svg, i, idx, z) {
     r.setAttribute('width', hw); r.setAttribute('height', hh);
     r.setAttribute('class', 'handle');
     r.style.cursor = cursor;
-    r.addEventListener('mousedown', ev => beginResize(ev, i, idx, name));
+    r.addEventListener('pointerdown', ev => beginResize(ev, i, idx, name));
     svg.appendChild(r);
   });
 }
 
 // ---------- édition: déplacer / redimensionner ----------
 function beginZoneDrag(ev, i, idx) {
-  if (ev.button !== 0) return;
+  if (!ev.isPrimary || (ev.pointerType === 'mouse' && ev.button !== 0)) return;
   ev.stopPropagation();
+  keyboardNav = false;
   selected = { page: i, index: idx };
   renderZones(i);
-  menu.hidden = true;
+  closeMenu();
 
   const svg = pageEls[i].svg;
   const z = zones[i][idx];
@@ -331,33 +497,38 @@ function beginZoneDrag(ev, i, idx) {
   const remember = onceHistory();
   let moved = false;
 
-  startDrag(e => {
+  startDrag(ev, e => {
     const p = toSvgPoint(svg, e.clientX, e.clientY);
     const dx = p[0] - start[0], dy = p[1] - start[1];
     if (!moved && Math.abs(dx) + Math.abs(dy) < 0.4) return;
     moved = true; remember();
     z.points = orig.map(([x, y]) => [x + dx, y + dy]);
     renderZones(i);
+  }, (e, cancelled) => {
+    if (cancelled && moved) { z.points = orig; renderZones(i); }
   });
 }
 
 function beginVertexDrag(ev, i, idx, vi) {
-  if (ev.button !== 0) return;
+  if (!ev.isPrimary || (ev.pointerType === 'mouse' && ev.button !== 0)) return;
   ev.stopPropagation();
   const svg = pageEls[i].svg;
   const z = zones[i][idx];
+  const orig = z.points.map(p => p.slice());
   const remember = onceHistory();
   let moved = false;
 
-  startDrag(e => {
+  startDrag(ev, e => {
     if (!moved) { moved = true; remember(); }
     z.points[vi] = toSvgPoint(svg, e.clientX, e.clientY);
     renderZones(i);
+  }, (e, cancelled) => {
+    if (cancelled && moved) { z.points = orig; renderZones(i); }
   });
 }
 
 function beginResize(ev, i, idx, name) {
-  if (ev.button !== 0) return;
+  if (!ev.isPrimary || (ev.pointerType === 'mouse' && ev.button !== 0)) return;
   ev.stopPropagation();
   const svg = pageEls[i].svg;
   const z = zones[i][idx];
@@ -367,7 +538,7 @@ function beginResize(ev, i, idx, name) {
   const remember = onceHistory();
   let moved = false;
 
-  startDrag(e => {
+  startDrag(ev, e => {
     if (!moved) { moved = true; remember(); }
     const p = toSvgPoint(svg, e.clientX, e.clientY);
     const [x0, y0, x1, y1] = edgesFrom(name, bb, p);
@@ -382,15 +553,18 @@ function beginResize(ev, i, idx, name) {
       ]);
     }
     renderZones(i);
+  }, (e, cancelled) => {
+    if (cancelled && moved) { z.points = orig; renderZones(i); }
   });
 }
 
 // ---------- tracé ----------
 function wireLayer(i, svg) {
-  svg.addEventListener('mousedown', e => {
-    if (e.button !== 0 || deletedPages.has(i)) return;
+  svg.addEventListener('pointerdown', e => {
+    if (!e.isPrimary || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    if (deletedPages.has(i)) return;
     activePage = i;
-    if (selected) { selected = null; menu.hidden = true; renderZones(i); }
+    if (selected) { selected = null; closeMenu(); renderZones(i); }
     if (tool === 'rect') startRect(i, svg, e);
     else if (tool === 'freehand') startFreehand(i, svg, e);
   });
@@ -420,14 +594,15 @@ function startRect(i, svg, e) {
   ghost.setAttribute('class', 'zone-ghost zone-ghost-fill');
   svg.appendChild(ghost);
   let last = p0;
-  startDrag(ev => {
+  startDrag(e, ev => {
     last = toSvgPoint(svg, ev.clientX, ev.clientY);
     ghost.setAttribute('x', Math.min(p0[0], last[0]));
     ghost.setAttribute('y', Math.min(p0[1], last[1]));
     ghost.setAttribute('width', Math.abs(last[0] - p0[0]));
     ghost.setAttribute('height', Math.abs(last[1] - p0[1]));
-  }, () => {
+  }, (ev, cancelled) => {
     ghost.remove();
+    if (cancelled) return;
     const x0 = Math.min(p0[0], last[0]), y0 = Math.min(p0[1], last[1]);
     const x1 = Math.max(p0[0], last[0]), y1 = Math.max(p0[1], last[1]);
     if (x1 - x0 < 3 || y1 - y0 < 3) return;
@@ -439,15 +614,25 @@ function startFreehand(i, svg, e) {
   const pts = [toSvgPoint(svg, e.clientX, e.clientY)];
   const line = document.createElementNS(svg.namespaceURI, 'polyline');
   line.setAttribute('class', 'zone-ghost');
-  svg.appendChild(line);
-  startDrag(ev => {
+  // témoin de ce qui sera réellement effacé, mis à jour pendant le tracé
+  const hull = document.createElementNS(svg.namespaceURI, 'rect');
+  hull.setAttribute('class', 'zone-ghost zone-ghost-hull');
+  svg.append(hull, line);
+  const syncHull = () => {
+    const [x0, y0, x1, y1] = bbox(pts);
+    hull.setAttribute('x', x0); hull.setAttribute('y', y0);
+    hull.setAttribute('width', x1 - x0); hull.setAttribute('height', y1 - y0);
+  };
+  startDrag(e, ev => {
     const p = toSvgPoint(svg, ev.clientX, ev.clientY);
     const l = pts[pts.length - 1];
     if (Math.hypot(p[0] - l[0], p[1] - l[1]) < 2) return;
     pts.push(p);
     line.setAttribute('points', pts.map(x => x.join(',')).join(' '));
-  }, () => {
-    line.remove();
+    syncHull();
+  }, (ev, cancelled) => {
+    line.remove(); hull.remove();
+    if (cancelled) return;
     if (pts.length >= 3) addZone(i, { type: 'freehand', points: pts, mode: defaultMode });
   });
 }
@@ -457,11 +642,16 @@ function polyClick(i, svg, e) {
     cancelPending();
     const poly = document.createElementNS(svg.namespaceURI, 'polyline');
     poly.setAttribute('class', 'zone-ghost');
-    svg.appendChild(poly);
-    pending = { page: i, svg, poly, pts: [] };
+    const hull = document.createElementNS(svg.namespaceURI, 'rect');
+    hull.setAttribute('class', 'zone-ghost zone-ghost-hull');
+    svg.append(hull, poly);
+    pending = { page: i, svg, poly, hull, pts: [] };
   }
   pending.pts.push(toSvgPoint(svg, e.clientX, e.clientY));
   pending.poly.setAttribute('points', pending.pts.map(pt => pt.join(',')).join(' '));
+  const [x0, y0, x1, y1] = bbox(pending.pts);
+  pending.hull.setAttribute('x', x0); pending.hull.setAttribute('y', y0);
+  pending.hull.setAttribute('width', x1 - x0); pending.hull.setAttribute('height', y1 - y0);
 }
 function finishPolygon() {
   if (pending && pending.pts.length >= 3) {
@@ -470,48 +660,92 @@ function finishPolygon() {
   cancelPending();
 }
 function cancelPending() {
-  if (pending) pending.poly.remove();
+  if (pending) { pending.poly.remove(); pending.hull.remove(); }
   pending = null;
 }
 
 // ---------- menu contextuel ----------
-function openMenu(ev, z) {
+function showMenu(x, y, z, focusFirst) {
   $('zoneModeDelete').classList.toggle('active', z.mode === 'delete');
+  $('zoneModeDelete').setAttribute('aria-checked', z.mode === 'delete');
   $('zoneModePixelate').classList.toggle('active', z.mode === 'pixelate');
+  $('zoneModePixelate').setAttribute('aria-checked', z.mode === 'pixelate');
   menu.hidden = false;
   const r = menu.getBoundingClientRect();
-  menu.style.left = Math.min(ev.clientX, window.innerWidth - r.width - 10) + 'px';
-  menu.style.top = Math.min(ev.clientY, window.innerHeight - r.height - 10) + 'px';
+  menu.style.left = Math.max(6, Math.min(x, window.innerWidth - r.width - 10)) + 'px';
+  menu.style.top = Math.max(6, Math.min(y, window.innerHeight - r.height - 10)) + 'px';
+  if (focusFirst) menuItems()[0].focus();
 }
+
+// ouverture au clavier: le menu s'ancre sous la zone, pas sous le curseur
+function openMenuOnZone(z) {
+  const el = selectedEl();
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  showMenu(r.left, r.bottom + 4, z, true);
+}
+
+function menuItems() { return [...menu.querySelectorAll('.zm-item')]; }
+
+function closeMenu(refocus) {
+  if (menu.hidden) return;
+  menu.hidden = true;
+  if (refocus) {
+    const el = selectedEl();
+    if (el) el.focus({ preventScroll: true });
+  }
+}
+
+menu.addEventListener('keydown', e => {
+  const items = menuItems();
+  const i = items.indexOf(document.activeElement);
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const d = e.key === 'ArrowDown' ? 1 : -1;
+    items[(i + d + items.length) % items.length].focus();
+  } else if (e.key === 'Escape' || e.key === 'Tab') {
+    e.preventDefault();
+    keyboardNav = true;
+    closeMenu(true);
+  }
+});
+
 function setSelectedMode(mode) {
   if (!selected) return;
   pushHistory();
   zones[selected.page][selected.index].mode = mode;
   renderZones(selected.page);
   $('zoneModeDelete').classList.toggle('active', mode === 'delete');
+  $('zoneModeDelete').setAttribute('aria-checked', mode === 'delete');
   $('zoneModePixelate').classList.toggle('active', mode === 'pixelate');
+  $('zoneModePixelate').setAttribute('aria-checked', mode === 'pixelate');
   updateStatus();
 }
 function deleteSelected() {
   if (!selected) return;
-  pushHistory();
   const { page, index } = selected;
+  pushHistory();
   zones[page].splice(index, 1);
-  selected = null; menu.hidden = true;
+  selected = null;
+  closeMenu();
   renderZones(page); updateStatus();
 }
 $('zoneModeDelete').onclick = () => setSelectedMode('delete');
 $('zoneModePixelate').onclick = () => setSelectedMode('pixelate');
 $('zoneDelete').onclick = deleteSelected;
-document.addEventListener('mousedown', e => {
-  if (!menu.hidden && !menu.contains(e.target)) menu.hidden = true;
+document.addEventListener('pointerdown', e => {
+  if (!menu.hidden && !menu.contains(e.target)) closeMenu();
 });
 
 // ---------- barre d'outils ----------
 function setTool(t) {
   tool = t;
   if (t !== 'polygon') cancelPending();
-  document.querySelectorAll('.tool-btn').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
+  document.querySelectorAll('.tool-btn').forEach(b => {
+    const on = b.dataset.tool === t;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on);
+  });
 }
 $('tool-rect').onclick = () => setTool('rect');
 $('tool-polygon').onclick = () => setTool('polygon');
@@ -519,17 +753,22 @@ $('tool-freehand').onclick = () => setTool('freehand');
 
 function setDefaultMode(m) {
   defaultMode = m;
-  document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
+  document.querySelectorAll('.mode-btn').forEach(b => {
+    const on = b.dataset.mode === m;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on);
+  });
 }
 $('mode-delete').onclick = () => setDefaultMode('delete');
 $('mode-pixelate').onclick = () => setDefaultMode('pixelate');
 
 $('undo').onclick = undo;
+$('redo').onclick = redo;
 $('clear').onclick = () => {
   if (!(zones[activePage] || []).length) return;
   pushHistory();
   delete zones[activePage];
-  if (selected && selected.page === activePage) { selected = null; menu.hidden = true; }
+  if (selected && selected.page === activePage) { selected = null; closeMenu(); }
   renderZones(activePage); updateStatus();
 };
 
@@ -541,8 +780,13 @@ window.addEventListener('keydown', e => {
   if (mod && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (mod && k === 'y') { e.preventDefault(); redo(); return; }
   if (mod) return;
-  if (e.key === 'Escape') { cancelPending(); selected = null; menu.hidden = true; renderAll(); }
-  if (e.key === 'Enter') finishPolygon();
+  if (e.key === 'Escape') { cancelPending(); selected = null; closeMenu(); renderAll(); }
+  if (e.key === 'Enter' && pending) finishPolygon();
+  if (e.key === 'ContextMenu' && selected && menu.hidden) {
+    e.preventDefault();
+    keyboardNav = true;
+    openMenuOnZone(zones[selected.page][selected.index]);
+  }
   if ((e.key === 'Delete' || e.key === 'Backspace') && selected) { e.preventDefault(); deleteSelected(); }
 });
 // les poignées ont une taille écran fixe: il faut les redessiner au resize
@@ -550,45 +794,70 @@ window.addEventListener('resize', () => { if (selected) renderZones(selected.pag
 
 // ---------- aide ----------
 const help = $('helpPop');
-$('helpBtn').onclick = e => { e.stopPropagation(); help.hidden = !help.hidden; };
-document.addEventListener('mousedown', e => {
-  if (!help.hidden && !help.contains(e.target) && e.target !== $('helpBtn')) help.hidden = true;
+$('helpBtn').onclick = e => {
+  e.stopPropagation();
+  help.hidden = !help.hidden;
+  $('helpBtn').setAttribute('aria-expanded', !help.hidden);
+};
+document.addEventListener('pointerdown', e => {
+  if (!help.hidden && !help.contains(e.target) && e.target !== $('helpBtn')) {
+    help.hidden = true;
+    $('helpBtn').setAttribute('aria-expanded', 'false');
+  }
 });
+
+function syncButtons() {
+  const total = Object.values(zones).reduce((a, b) => a + b.length, 0);
+  const n = (zones[activePage] || []).length;
+  $('undo').disabled = busy || history.length === 0;
+  $('redo').disabled = busy || redoStack.length === 0;
+  $('clear').disabled = busy || !n;
+  $('export').disabled = busy || !(total || deletedPages.size);
+}
 
 function updateStatus() {
   const total = Object.values(zones).reduce((a, b) => a + b.length, 0);
   const n = (zones[activePage] || []).length;
   $('pnum').textContent = pages.length ? `${activePage + 1} / ${pages.length}` : '— / —';
-  $('undo').disabled = history.length === 0;
-  $('clear').disabled = !n;
-  $('export').disabled = !(total || deletedPages.size);
+  syncButtons();
+  if (busy) return;   // ne pas écraser un message de progression
   const delTxt = deletedPages.size ? `, ${deletedPages.size} page(s) supprimée(s)` : '';
-  $('status').textContent = pages.length
+  setStatus(pages.length
     ? `${n} zone(s) sur la page active, ${total} au total${delTxt}.`
-    : 'Aucun document.';
+    : 'Aucun document.');
 }
 
 // ---------- export ----------
 $('export').onclick = async () => {
-  $('status').textContent = 'Traitement…';
-  const r = await fetch('/api/export', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sid, zones, strip_meta: $('meta').checked, deleted_pages: [...deletedPages] })
-  });
-  if (!r.ok) { $('status').textContent = 'Erreur : ' + await r.text(); return; }
-  const d = await r.json();
-  const a = document.createElement('a'); a.href = d.download; a.download = d.filename;
-  document.body.appendChild(a); a.click(); a.remove();
-  // le contenu des fuites vient du PDF: jamais d'innerHTML avec ça.
-  const span = document.createElement('span');
-  if (d.leak_count) {
-    span.className = 'warn';
-    const detail = d.leaks.map(l => `p${l.page} ${l.kind} « ${l.text} »`).join(', ');
-    span.textContent = `Attention : ${d.leak_count} élément(s) subsistent dans les zones (${detail}). Vérifiez le résultat.`;
-  } else {
-    span.className = 'ok';
-    span.textContent = 'Export terminé, aucun résidu détecté dans les zones.';
+  if (busy) return;   // le bouton restait actif: un double-clic exportait deux fois
+  setBusy(true, 'Traitement…');
+  try {
+    const r = await fetch('/api/export', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sid, zones, strip_meta: $('meta').checked, deleted_pages: [...deletedPages] })
+    });
+    if (!r.ok) {
+      const msg = await r.text().catch(() => '');
+      setBusy(false);
+      setStatus('Erreur : ' + (msg || `réponse ${r.status}`), 'warn');
+      return;
+    }
+    const d = await r.json();
+    const a = document.createElement('a'); a.href = d.download; a.download = d.filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setBusy(false);
+    // le contenu des fuites vient du PDF: jamais d'innerHTML avec ça.
+    if (d.leak_count) {
+      const detail = d.leaks.map(l => `p${l.page} ${l.kind} « ${l.text} »`).join(', ');
+      setStatus(`Attention : ${d.leak_count} élément(s) subsistent dans les zones (${detail}). Vérifiez le résultat.`, 'warn');
+    } else {
+      setStatus('Export terminé, aucun résidu détecté dans les zones.', 'ok');
+    }
+  } catch (err) {
+    setBusy(false);
+    setStatus('Erreur : ' + (err.message || 'serveur injoignable'), 'warn');
   }
-  $('status').textContent = '';
-  $('status').appendChild(span);
 };
+
+setTool('rect');
+setDefaultMode('delete');

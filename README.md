@@ -122,14 +122,33 @@ uv sync
 uv run main.py
 ```
 
-Binds `127.0.0.1:8765` and opens your browser. Set `PORT` to change the port,
-`HOST` to change the interface.
+Binds `127.0.0.1:8765` and opens your browser.
 
-Logging (connection, import, export — see `src/logs.py`) always goes to
-stderr. `SPYDF_LOG_LEVEL` sets the verbosity (default `INFO`). `SPYDF_LOG_FILE`
-also writes a rotating file (1 MB × 3). `SPYDF_LOG_FILENAMES=1` opts into
-logging uploaded filenames, which are identifying (`copie_jean_dupont.pdf`)
-and are otherwise never recorded.
+### Configuration
+
+Every setting lives in `src/config.py` and can be overridden from the
+environment or from a `.env` file next to `pyproject.toml`:
+
+```bash
+cp .env.example .env
+```
+
+`.env.example` documents each variable and holds its default, so an untouched
+copy changes nothing. Real environment variables win over the file. The ones
+worth knowing:
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `HOST`, `PORT` | `127.0.0.1`, `8765` | where the server binds |
+| `SPYDF_MAX_UPLOAD_BYTES` | 200 MB | upload cap |
+| `SPYDF_SESSION_TTL` | `7200` | how long a forgotten document stays in RAM |
+| `SPYDF_LOG_LEVEL` | `INFO` | log verbosity |
+| `SPYDF_LOG_FILE` | *(unset)* | also write a rotating log file |
+| `SPYDF_LOG_FILENAMES` | `0` | opt in to logging uploaded file names |
+
+Logging (connection, import, export) always goes to stderr. Uploaded file names
+are identifying (`copie_jean_dupont.pdf`), so they are recorded only with
+`SPYDF_LOG_FILENAMES=1`; leak text and watermark text are never logged at all.
 
 ### Locally, in Docker
 

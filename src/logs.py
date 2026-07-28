@@ -2,9 +2,10 @@
 
 import logging
 import logging.handlers
-import os
 import re
 import sys
+
+from src.config import LOG_FILE_BACKUPS, LOG_FILE_MAX_BYTES, log_file, log_level
 
 LOGGER_NAME = "spydf"
 DEFAULT_LEVEL = "INFO"
@@ -33,23 +34,19 @@ def _resolve_level(raw: str) -> int:
 
 
 def setup_logging() -> logging.Logger:
-    """Configure the logger from the environment. Idempotent.
+    """Configure the logger from `src.config`. Idempotent.
 
     A stderr handler is always installed, since that is where a container's logs
-    belong. `SPYDF_LOG_FILE` adds a bounded rotating file next to it; if that
-    path cannot be opened the app warns and carries on with stderr alone,
+    belong. A configured log file adds a bounded rotating handler next to it; if
+    that path cannot be opened the app warns and carries on with stderr alone,
     because a logging problem must never stop it from serving.
-
-    Env:
-        SPYDF_LOG_LEVEL: Level name, INFO by default.
-        SPYDF_LOG_FILE: Path to an optional rotating log file (1 MB x 3).
 
     Returns:
         The configured logger. Calling this twice does not duplicate lines.
     """
     global _configured
     logger = logging.getLogger(LOGGER_NAME)
-    logger.setLevel(_resolve_level(os.environ.get("SPYDF_LOG_LEVEL")))
+    logger.setLevel(_resolve_level(log_level()))
 
     if _configured:
         return logger
@@ -64,16 +61,19 @@ def setup_logging() -> logging.Logger:
     stream_handler.setFormatter(fmt)
     logger.addHandler(stream_handler)
 
-    log_file = os.environ.get("SPYDF_LOG_FILE")
-    if log_file:
+    path = log_file()
+    if path:
         try:
             file_handler = logging.handlers.RotatingFileHandler(
-                log_file, maxBytes=1 * 1024 * 1024, backupCount=3, encoding="utf-8"
+                path,
+                maxBytes=LOG_FILE_MAX_BYTES,
+                backupCount=LOG_FILE_BACKUPS,
+                encoding="utf-8",
             )
             file_handler.setFormatter(fmt)
             logger.addHandler(file_handler)
         except OSError as e:
-            print(f"spydf: cannot open SPYDF_LOG_FILE={log_file!r}: {e}", file=sys.stderr)
+            print(f"spydf: cannot open SPYDF_LOG_FILE={path!r}: {e}", file=sys.stderr)
 
     logger.propagate = False
     _configured = True

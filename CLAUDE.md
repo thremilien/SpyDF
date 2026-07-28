@@ -35,11 +35,12 @@ allowed a one-line comment instead of a docstring.
 
 - `main.py` — thin entry point, delegates to `src.server.main`
 - `src/app.py` — the FastAPI app and all `/api/*` routes
-- `src/server.py` — uvicorn bootstrap; reads `HOST`/`PORT` env vars
+- `src/server.py` — uvicorn bootstrap
+- `src/config.py` — every tunable, read from the environment and from `.env`;
+  `.env.example` is the committed reference, `.env` itself is ignored
 - `src/templates/index.html` + `src/static/` — the UI (served directly, no templating engine)
 - `src/logs.py` — the `"spydf"` logger: stderr always, optional rotating
-  file via `SPYDF_LOG_FILE`, level via `SPYDF_LOG_LEVEL`; `log_event()` is
-  the only thing that should write to it
+  file; `log_event()` is the only thing that should write to it
 
 ## Conventions
 
@@ -70,6 +71,8 @@ allowed a one-line comment instead of a docstring.
   (`watermark=true|false` only), and only an 8-char session id prefix, never
   the full uuid — it is a capability granting `/api/download/{key}` access.
   `SPYDF_LOG_LEVEL` and `SPYDF_LOG_FILE` control the rest.
+- No magic numbers in `src/app.py`: a new tunable goes in `src/config.py` with
+  a default, and gets a documented line in `.env.example`.
 - The optional watermark is stamped *after* `_verify` runs, not before: a
   diagonal watermark crosses redacted zones by design, so verifying against
   the watermarked bytes would report it as a leak on every page — and

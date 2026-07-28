@@ -1,16 +1,13 @@
 """Uvicorn bootstrap: reads the HOST/PORT env vars and starts the app."""
 
-import os
 import threading
 import webbrowser
 
 import uvicorn
 
 from src.app import app
+from src.config import HOST, PORT, log_file
 from src.logs import log_event, setup_logging
-
-HOST = os.environ.get("HOST", "127.0.0.1")
-PORT = int(os.environ.get("PORT", 8765))
 
 
 def main():
@@ -21,7 +18,7 @@ def main():
     three events that matter. Those are logged by hand in `src.app` instead.
     """
     setup_logging()
-    log_event("startup", host=HOST, port=PORT, log_file=os.environ.get("SPYDF_LOG_FILE") or "-")
+    log_event("startup", host=HOST, port=PORT, log_file=log_file() or "-")
     url = f"http://127.0.0.1:{PORT}"
     print(f"SpyDF -> {url}")
     if HOST == "127.0.0.1":

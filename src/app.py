@@ -16,28 +16,31 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from src.config import (
+    LEAK_COVERAGE,
+    LOG_FILENAMES_VAR,
+    MASK_MAX_PX,
+    MAX_SESSIONS,
+    MAX_STRIPS,
+    MAX_UPLOAD_BYTES,
+    MAX_ZOOM,
+    MIN_ZOOM,
+    MOSAIC_BLOCKS,
+    RENDER_ZOOM,
+    SESSION_TTL,
+    SID_LOG_LEN,
+    STRIP_HEIGHT,
+    UA_MAX_LEN,
+    WATERMARK_DIAGONAL_RATIO,
+    WATERMARK_FONT,
+    WATERMARK_MAX_LEN,
+    WATERMARK_MIN_SIZE,
+    env_flag,
+)
 from src.logs import log_event
 from src.probe import inspect_document
 
 PACKAGE_DIR = Path(__file__).parent
-RENDER_ZOOM = 4.0  # fallback zoom when the client asks for no width
-MIN_ZOOM = 1.5
-MAX_ZOOM = 8.0  # memory guard rail: 8x on A4 = ~128 Mpx
-MOSAIC_BLOCKS = 14  # width of a pixelated zone, in "big pixels"
-STRIP_HEIGHT = 2.0  # height of one redaction strip, in PDF points
-MAX_STRIPS = 200  # guard rail: a very tall zone must not yield a thousand rects
-MASK_MAX_PX = 240  # resolution of the mask clipping a mosaic to the outline
-
-MAX_UPLOAD_BYTES = 200 * 1024 * 1024
-SESSION_TTL = 2 * 3600  # a forgotten document must not sit in RAM
-MAX_SESSIONS = 32
-
-WATERMARK_MAX_LEN = 80
-WATERMARK_MIN_SIZE = 8
-WATERMARK_DIAGONAL_RATIO = 0.78  # share of the diagonal the text should span
-WATERMARK_FONT = "helv"  # base-14 font, nothing to embed
-# No absolute cap on the font size: see _watermark_fit_size, whose guard rail
-# is geometric and therefore scale-invariant.
 
 # On some systems .js is guessed as application/javascript, which gets no
 # charset, and the JS accents then reach the UI broken.
@@ -95,13 +98,6 @@ def _safe_filename(name: str) -> str:
     name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
     name = re.sub(r"[^A-Za-z0-9._ -]", "_", os.path.basename(name)).strip(" .")
     return name[:100] or "document.pdf"
-
-
-# A whole sid is an access capability (/api/download/{key}), so only this
-# prefix is ever logged.
-SID_LOG_LEN = 8
-# The user-agent is client-supplied: bound it before logging it.
-UA_MAX_LEN = 120
 
 
 # The only part of a session id that may reach a log line.
@@ -195,7 +191,7 @@ async def api_open(request: Request, file: UploadFile = File(...)):
         **ip_fields,
         "ms": round((time.perf_counter() - start) * 1000),
     }
-    if os.environ.get("SPYDF_LOG_FILENAMES") == "1":
+    if env_flag(LOG_FILENAMES_VAR):
         fields["filename"] = name
     log_event("import", **fields)
 
@@ -601,9 +597,6 @@ def _apply_watermark(data: bytes, text: str) -> bytes:
         return out
     except Exception:
         return data
-
-
-LEAK_COVERAGE = 0.15  # share of a word inside the zone above which it leaks
 
 
 # Share of `rect` covered by the redacted strips. Strips never overlap (one per

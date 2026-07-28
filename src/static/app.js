@@ -120,6 +120,7 @@ function uploadPdf(f, onProgress) {
 async function openFile(f) {
   if (!f) return;
   if (busy) return;
+  stopPrefetch();
   if (f.type !== 'application/pdf' && !f.name.toLowerCase().endsWith('.pdf')) {
     setStatus('This file is not a PDF.', 'warn');
     return;
@@ -164,11 +165,45 @@ function awaitFirstPage() {
     clearTimeout(timer);
     setBusy(false);
     updateStatus();
+    prefetchPages();
   };
   const timer = setTimeout(finish, 15000);   // safety net
   pe.img.addEventListener('load', finish, { once: true });
   pe.img.addEventListener('error', finish, { once: true });
   if (pe.img.complete && pe.img.naturalWidth) finish();
+}
+
+// ---------- background prefetch ----------
+// Page 1 is rendered on demand, the rest are fetched quietly while the user
+// works, so scrolling ahead is instant instead of waiting on a render.
+//
+// Strictly one at a time: rendering is CPU-bound in a single-process server, so
+// a burst of prefetches would queue in front of the page the user actually
+// scrolled to. Sequential means that page waits for one render at worst.
+let prefetchToken = 0;
+
+function stopPrefetch() { prefetchToken++; }
+
+function prefetchPages() {
+  const token = ++prefetchToken;
+  const next = () => {
+    if (token !== prefetchToken || !sid) return;   // cancelled, or another document
+    const i = pageEls.findIndex(pe => !pe.loaded);
+    if (i === -1) return;
+    const pe = pageEls[i];
+    let done = false;
+    const step = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(guard);
+      setTimeout(next, 50);   // breathe: leave room for an interactive request
+    };
+    const guard = setTimeout(step, 20000);   // a page that never loads must not stall the rest
+    pe.img.addEventListener('load', step, { once: true });
+    pe.img.addEventListener('error', step, { once: true });
+    loadPage(i);
+  };
+  next();
 }
 
 $('file').onchange = e => { openFile(e.target.files[0]); e.target.value = ''; };

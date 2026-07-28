@@ -113,10 +113,11 @@
   <div id="insRail" aria-label="Ce que le document porte hors de ses pages"></div>
 
   <div id="stage">
-    <div id="drop">
+    <div id="drop" role="button" tabindex="0"
+         aria-label="Ouvrir un PDF : cliquez pour choisir un fichier, ou glissez-le ici">
       <svg viewBox="0 0 48 48" fill="none"><rect x="10" y="5" width="28" height="38" rx="3" stroke="currentColor" stroke-width="1.6"/><rect x="15" y="24" width="18" height="9" rx="1" fill="currentColor" opacity=".9"/><line x1="15" y1="13" x2="29" y2="13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><line x1="15" y1="18" x2="33" y2="18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
       <h1>Déposez un examen à anonymiser</h1>
-      <p>Glissez un PDF ici, ou ouvrez-en un depuis la barre du haut.</p>
+      <p>Glissez un PDF ici, ou cliquez pour en choisir un.</p>
     </div>
     <div id="pages" hidden></div>
   </div>

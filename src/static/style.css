@@ -146,9 +146,12 @@ header {
 #drop {
   margin: auto; max-width: 460px; padding: 52px 32px; text-align: center;
   background: var(--paper); border: 1px dashed var(--paper-edge); border-radius: 16px;
-  box-shadow: 0 1px 3px #0001;
+  box-shadow: 0 1px 3px #0001; cursor: pointer;
   transition: border-color .12s ease, background .12s ease;
 }
+#drop:hover, #drop:focus-visible { border-color: var(--accent); background: var(--accent-soft); }
+#drop:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+#drop:hover svg, #drop:focus-visible svg { color: var(--accent); }
 #drop.drag-over { border-color: var(--accent); background: var(--accent-soft); }
 #stage.drag-over::after {
   content: ''; position: fixed; inset: 0; z-index: 15;

@@ -195,6 +195,14 @@ stageEl.addEventListener('drop', e => {
   if (f) openFile(f);
 });
 
+// la zone de dépôt ouvre aussi le sélecteur de fichier: c'est la première
+// chose qu'on voit, et rien n'y indiquait qu'il fallait viser la barre du
+// haut. Elle est masquée dès qu'un document est ouvert.
+$('drop').addEventListener('click', () => { if (!busy) $('file').click(); });
+$('drop').addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('drop').click(); }
+});
+
 // ---------- construction des pages ----------
 function buildPages() {
   pagesEl.innerHTML = '';

@@ -43,8 +43,11 @@ allowed a one-line comment instead of a docstring.
 
 ## Conventions
 
-- UI-facing strings and comments in the app are in French; keep new
-  user-visible text consistent with that unless told otherwise.
+- Everything is in English: UI strings, comments, docstrings, log fields.
+- Comments stay short — one or two lines. Anything longer belongs in a
+  Google-style docstring (summary line, blank line, `Args:`/`Returns:`/
+  `Raises:`). A trivial helper takes a single `#` line above it instead of a
+  docstring. Every file opens with a one-line docstring saying what it is for.
 - Redaction correctness matters more than convenience here: `/api/export`
   re-opens the exported PDF and checks for leftover text words inside the
   redacted rects (`leaks`), returned to the client as a warning. Don't remove

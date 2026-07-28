@@ -1,13 +1,4 @@
-"""Logger configuration for the operator-visible audit trail.
-
-Three events matter: connection to the site, PDF import, PDF export. This
-module owns the single `"spydf"` logger, its handlers, and a small
-`log_event` helper that formats fields as greppable `key=value` pairs.
-
-Nothing here decides *what* to log — that stays in src/app.py and
-src/server.py, close to the data. This module only wires up *where* log
-lines go and how they are formatted.
-"""
+"""The "spydf" logger: where the audit-trail lines go and how they are formatted."""
 
 import logging
 import logging.handlers
@@ -18,18 +9,23 @@ import sys
 LOGGER_NAME = "spydf"
 DEFAULT_LEVEL = "INFO"
 
+# Library-side silence: importing src.app without setup_logging() (the tests do)
+# must neither crash nor print.
 _logger = logging.getLogger(LOGGER_NAME)
-_logger.addHandler(logging.NullHandler())  # bibliotheque: silencieux tant que
-# setup_logging() n'a pas ete appele (cas des tests qui importent src.app
-# directement, sans passer par src/server.py).
+_logger.addHandler(logging.NullHandler())
 
-_configured = False  # protege contre les handlers en double si on appelle
-# setup_logging() plusieurs fois (rechargement, tests).
+_configured = False
 
 
 def _resolve_level(raw: str) -> int:
-    """Nom de niveau insensible a la casse; une valeur farfelue retombe sur
-    INFO plutot que de faire planter le demarrage.
+    """Turn a level name into its number.
+
+    Args:
+        raw: A level name in any case, or None. Anything unrecognised falls back
+            to INFO rather than breaking startup.
+
+    Returns:
+        The matching `logging` level.
     """
     name = (raw or DEFAULT_LEVEL).strip().upper()
     level = logging.getLevelName(name)
@@ -37,9 +33,19 @@ def _resolve_level(raw: str) -> int:
 
 
 def setup_logging() -> logging.Logger:
-    """Configure le logger "spydf": un handler stderr toujours present, et un
-    handler fichier optionnel si SPYDF_LOG_FILE est defini. Idempotent: un
-    second appel ne double pas les lignes.
+    """Configure the logger from the environment. Idempotent.
+
+    A stderr handler is always installed, since that is where a container's logs
+    belong. `SPYDF_LOG_FILE` adds a bounded rotating file next to it; if that
+    path cannot be opened the app warns and carries on with stderr alone,
+    because a logging problem must never stop it from serving.
+
+    Env:
+        SPYDF_LOG_LEVEL: Level name, INFO by default.
+        SPYDF_LOG_FILE: Path to an optional rotating log file (1 MB x 3).
+
+    Returns:
+        The configured logger. Calling this twice does not duplicate lines.
     """
     global _configured
     logger = logging.getLogger(LOGGER_NAME)
@@ -48,8 +54,6 @@ def setup_logging() -> logging.Logger:
     if _configured:
         return logger
 
-    # on retire le NullHandler pose au chargement du module: une fois
-    # configure, on veut les vrais handlers et rien d'autre.
     for h in list(logger.handlers):
         if isinstance(h, logging.NullHandler):
             logger.removeHandler(h)
@@ -69,9 +73,7 @@ def setup_logging() -> logging.Logger:
             file_handler.setFormatter(fmt)
             logger.addHandler(file_handler)
         except OSError as e:
-            # un souci de logging ne doit jamais empecher l'appli de servir:
-            # on avertit sur stderr et on continue avec stderr seul.
-            print(f"spydf: impossible d'ouvrir SPYDF_LOG_FILE={log_file!r}: {e}", file=sys.stderr)
+            print(f"spydf: cannot open SPYDF_LOG_FILE={log_file!r}: {e}", file=sys.stderr)
 
     logger.propagate = False
     _configured = True
@@ -82,11 +84,16 @@ _UNSAFE_VALUE = re.compile(r"[\s]")
 
 
 def _fmt_value(value) -> str:
-    """Rend une valeur greppable et sure: les booleens en true/false, et toute
-    valeur contenant un espace ou un saut de ligne entre guillemets avec les
-    guillemets et sauts de ligne internes neutralises — une valeur ne doit
-    jamais pouvoir fabriquer une fausse seconde ligne de log (injection de
-    log).
+    """Render one field value, greppable and safe.
+
+    Booleans become true/false. A value holding whitespace is quoted, with inner
+    quotes and newlines escaped, so no field can ever forge a second log line.
+
+    Args:
+        value: Any value to render.
+
+    Returns:
+        The rendered value.
     """
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -99,7 +106,13 @@ def _fmt_value(value) -> str:
 
 
 def log_event(name: str, level: int = logging.INFO, **fields) -> None:
-    """Emet une ligne `event=<name> k=v ...` sur le logger "spydf"."""
+    """Emit one `event=<name> k=v ...` line on the "spydf" logger.
+
+    Args:
+        name: The event name, e.g. "import" or "export_rejected".
+        level: Logging level, INFO by default.
+        **fields: Key/value pairs appended to the line, in order.
+    """
     parts = [f"event={_fmt_value(name)}"]
     parts.extend(f"{k}={_fmt_value(v)}" for k, v in fields.items())
     logging.getLogger(LOGGER_NAME).log(level, " ".join(parts))

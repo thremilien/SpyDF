@@ -15,8 +15,8 @@ def client():
 
 
 def test_inspect_surfaces_every_hidden_carrier(client):
-    """Chaque famille de trace doit apparaitre dans le rapport: c'est tout
-    l'interet du panneau, montrer ce qu'un lecteur PDF ne montre pas."""
+    """Every family of trace must show up in the report: that is the whole point
+    of the pane, showing what a PDF reader does not."""
     sid = open_doc(client, build_pdf())
     r = client.get(f"/api/inspect/{sid}")
     assert r.status_code == 200
@@ -44,8 +44,8 @@ def test_inspect_surfaces_every_hidden_carrier(client):
 
 
 def test_inspect_reports_invisible_text():
-    """Une couche OCR, ou du texte volontairement masque, est indexe et
-    copiable alors qu'il ne s'affiche pas: c'est le cas le plus interessant."""
+    """An OCR layer, or deliberately hidden text, is indexed and copyable while
+    never being displayed: the most interesting case."""
     doc = fitz.open()
     page = doc.new_page()
     page.insert_text((72, 100), "VISIBLE", fontsize=12)
@@ -101,7 +101,7 @@ def test_inspect_reports_javascript():
 
 
 def test_inspect_is_read_only(client):
-    """Le panneau ne doit rien changer: le document en session reste l'original."""
+    """The pane must change nothing: the session document stays the original."""
     original = build_pdf()
     sid = open_doc(client, original)
     client.get(f"/api/inspect/{sid}")
@@ -115,7 +115,7 @@ def test_inspect_unknown_session(client):
 
 
 def test_inspect_survives_a_bare_document(client):
-    """Un PDF vide de toute trace ne doit pas faire echouer la lecture."""
+    """A PDF free of any trace must not make the read fail."""
     doc = fitz.open()
     doc.new_page()
     data = doc.tobytes()

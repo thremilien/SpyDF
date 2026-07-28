@@ -1,12 +1,4 @@
-"""Tests du journal d'audit (`src/logs.py` + les trois evenements de
-`src/app.py`): connexion, import, export.
-
-Le point sensible n'est pas la redaction (voir tests/test_redaction.py) mais
-la confidentialite du journal lui-meme: le nom de fichier depose et le texte
-d'une fuite ne doivent jamais y apparaitre, sauf opt-in explicite pour le
-nom de fichier. On utilise `caplog` cote logger "spydf" plutot que de capturer
-stderr, qui est fragile (formatage, ordre d'ecriture).
-"""
+"""Tests for the audit log, whose own privacy is the point: no filename, no leak text."""
 
 import io
 import logging
@@ -31,10 +23,12 @@ def client():
 
 @pytest.fixture
 def clean_logging_state():
-    """setup_logging() modifie un etat global partage (handlers du logger,
-    propagate, drapeau _configured): on le sauvegarde et on le restaure pour
-    ne pas polluer les autres tests de ce fichier, qui comptent sur le
-    NullHandler + propagate=True par defaut pour que caplog les capture."""
+    """Save and restore the global logger state.
+
+    setup_logging() mutates shared state (handlers, propagate, the _configured
+    flag). The other tests in this file rely on the default NullHandler +
+    propagate=True for caplog to capture them.
+    """
     logger = logging.getLogger(LOGGER_NAME)
     saved_handlers = list(logger.handlers)
     saved_propagate = logger.propagate
@@ -47,7 +41,7 @@ def clean_logging_state():
     logs_module._configured = saved_configured
 
 
-# ---------------------------------------------------------------- connexion
+# ---------------------------------------------------------------- connection
 
 
 def test_get_root_logs_a_connection_event_with_ip(client, caplog):
@@ -78,8 +72,8 @@ def test_import_logs_size_and_pages_but_never_the_filename(client, caplog, monke
     assert "event=import " in text or text.endswith("event=import")
     assert f"size={len(data)}" in text
     assert "pages=1" in text
-    # regle de confidentialite: par defaut, le nom du fichier depose (qui peut
-    # etre identifiant, ex. "copie_jean_dupont.pdf") n'apparait nulle part.
+    # privacy rule: by default the uploaded file name (which can be identifying,
+    # e.g. "copie_jean_dupont.pdf") appears nowhere.
     assert "copie_jean_dupont" not in text
     assert "filename=" not in text
 
@@ -97,8 +91,8 @@ def test_filenames_appear_only_when_opted_in(client, caplog, monkeypatch):
     assert r.status_code == 200
 
     text = "\n".join(lk.message for lk in caplog.records)
-    # SPYDF_LOG_FILENAMES est lu au moment de l'appel (pas a l'import du
-    # module), donc le monkeypatch ci-dessus suffit sans recharger src.app.
+    # SPYDF_LOG_FILENAMES is read at call time, not at module import, so the
+    # monkeypatch above is enough without reloading src.app.
     assert "filename=copie_jean_dupont.pdf" in text
 
 
@@ -116,15 +110,16 @@ def test_rejected_upload_logs_a_warning(client, caplog):
 
 
 def test_export_logs_leak_count_never_leak_text(client, caplog, monkeypatch):
-    """La fuite est un mot litteralement extrait du document que l'operateur
-    cherchait a effacer: le journal ne doit jamais le porter, seulement son
-    nombre. On force artificiellement une fuite en substituant `_verify` --
-    la fidelite de la redaction elle-meme est deja couverte par
-    tests/test_redaction.py, ici on verifie seulement le journal."""
+    """A leak is a word taken literally from the document the operator was
+    erasing: the log must carry its count, never the word.
+
+    The leak is forced by substituting `_verify`; redaction fidelity itself is
+    already covered by tests/test_redaction.py, only the log matters here.
+    """
     leak_marker = "LEAKEDSECRETXYZ"
     fake_leaks = [
-        {"page": 1, "kind": "texte", "text": leak_marker},
-        {"page": 1, "kind": "texte", "text": leak_marker + "2"},
+        {"page": 1, "kind": "text", "text": leak_marker},
+        {"page": 1, "kind": "text", "text": leak_marker + "2"},
     ]
     monkeypatch.setattr(app_module, "_verify", lambda *a, **k: fake_leaks)
 
@@ -141,8 +136,8 @@ def test_export_logs_leak_count_never_leak_text(client, caplog, monkeypatch):
 
 
 def test_export_with_watermark_logs_flag_never_text(client, caplog):
-    """Le filigrane est du texte libre saisi par l'operateur: seul le
-    booleen de sa presence est journalise."""
+    """The watermark is free text typed by the operator: only the boolean of its
+    presence is logged."""
     watermark_text = "MARQUEURFILIGRANE"
     caplog.set_level(logging.INFO, logger=LOGGER_NAME)
     sid = open_doc(client, build_pdf())
@@ -164,8 +159,8 @@ def test_export_with_watermark_logs_flag_never_text(client, caplog):
 
 
 def test_export_success_event_is_logged(client, caplog):
-    """Regression: un premier passage n'emettait aucune ligne de succes pour
-    l'export, seuls les refus l'etaient."""
+    """Regression: a first pass logged no success line for the export, only its
+    refusals."""
     caplog.set_level(logging.INFO, logger=LOGGER_NAME)
     sid = open_doc(client, build_pdf())
     zones = {"0": [{"type": "rect", "points": rect_points(ZONE), "mode": "delete"}]}
@@ -253,8 +248,8 @@ def test_unwritable_log_file_path_warns_but_does_not_raise(
     bad_path = tmp_path / "no_such_directory" / "spydf.log"
     monkeypatch.setenv("SPYDF_LOG_FILE", str(bad_path))
 
-    logs_module.setup_logging()  # ne doit jamais lever: un souci de logging ne
-    # doit pas empecher l'appli de servir.
+    # must never raise: a logging problem must not stop the app from serving.
+    logs_module.setup_logging()
 
     err = capsys.readouterr().err
     assert "SPYDF_LOG_FILE" in err

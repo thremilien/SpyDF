@@ -1,41 +1,33 @@
-"""Lecture de tout ce qu'un PDF transporte sans le montrer.
-
-Ouvrir un PDF dans un navigateur n'en donne qu'une image. Le fichier, lui,
-porte aussi sa couche de texte indexable, ses metadonnees, son XMP, ses
-signets, ses annotations, ses champs de formulaire, ses pieces jointes, ses
-calques, ses liens et parfois du JavaScript. C'est cette charge invisible que
-l'on extrait ici, pour que l'utilisateur puisse la relire avant d'exporter.
-
-Rien n'est modifie: ce module ne fait que lire.
-"""
+"""Read-only: extracts what a PDF carries without showing it, for the inspector."""
 
 import fitz
 
-MAX_SPANS = 30_000  # garde-fou sur un document tres long
-SNIPPET = 2000  # on ne renvoie pas un script entier
+MAX_SPANS = 30_000  # guard rail on a very long document
+SNIPPET = 2000  # a whole script is never returned
 
 META_LABELS = [
-    ("title", "Titre"),
-    ("author", "Auteur"),
-    ("subject", "Sujet"),
-    ("keywords", "Mots-cles"),
-    ("creator", "Application d'origine"),
-    ("producer", "Producteur du PDF"),
-    ("creationDate", "Date de creation"),
-    ("modDate", "Date de modification"),
+    ("title", "Title"),
+    ("author", "Author"),
+    ("subject", "Subject"),
+    ("keywords", "Keywords"),
+    ("creator", "Originating application"),
+    ("producer", "PDF producer"),
+    ("creationDate", "Creation date"),
+    ("modDate", "Modification date"),
     ("format", "Format"),
-    ("encryption", "Chiffrement"),
+    ("encryption", "Encryption"),
 ]
 
 LINK_KINDS = {
     fitz.LINK_GOTO: "page",
     fitz.LINK_URI: "url",
-    fitz.LINK_LAUNCH: "fichier",
-    fitz.LINK_GOTOR: "document externe",
+    fitz.LINK_LAUNCH: "file",
+    fitz.LINK_GOTOR: "external document",
     fitz.LINK_NAMED: "action",
 }
 
 
+# A rectangle as four rounded floats, ready for JSON.
 def _r(rect) -> list[float]:
     return [round(float(v), 2) for v in (rect.x0, rect.y0, rect.x1, rect.y1)]
 
@@ -87,14 +79,21 @@ def _layers(doc) -> list[dict]:
     except Exception:
         return []
     return [
-        {"name": v.get("name") or f"calque {xref}", "on": bool(v.get("on", True))}
+        {"name": v.get("name") or f"layer {xref}", "on": bool(v.get("on", True))}
         for xref, v in ocgs.items()
     ]
 
 
 def _javascript(doc) -> list[dict]:
-    """Un PDF peut embarquer du script, declenche a l'ouverture ou sur une
-    action. PyMuPDF n'expose pas d'API pour cela: on parcourt les objets.
+    """List the scripts a PDF embeds, which fire on opening or on an action.
+
+    PyMuPDF exposes no API for these, so the objects are walked by hand.
+
+    Args:
+        doc: An open document.
+
+    Returns:
+        One entry per script, its code truncated to SNIPPET characters.
     """
     out = []
     for xref in range(1, doc.xref_length()):
@@ -117,8 +116,16 @@ def _javascript(doc) -> list[dict]:
 
 
 def _fonts(doc) -> list[dict]:
-    """Le nom d'une police sous-ensemblee ("ABCDEF+Calibri") et la liste des
-    polices trahissent la machine et l'application d'origine.
+    """List the fonts used, deduplicated by base name.
+
+    A subset font name ("ABCDEF+Calibri") and the font list as a whole give away
+    the machine and the application the file came from.
+
+    Args:
+        doc: An open document.
+
+    Returns:
+        One entry per distinct font, flagged as embedded or merely referenced.
     """
     seen, out = set(), []
     for page in doc:
@@ -136,9 +143,18 @@ def _fonts(doc) -> list[dict]:
 
 
 def _text_blocks(page, budget: list[int]) -> list[dict]:
-    """Le texte tel qu'il est reellement stocke, decoupe en blocs et lignes
-    pour rester lisible, chaque fragment garde son rectangle: c'est ce qui
-    permet ensuite de dire lequel tombe dans une zone.
+    """Extract the text layer as stored, in blocks and lines.
+
+    Every fragment keeps its rectangle, which is what later tells whether it
+    falls inside a drawn zone.
+
+    Args:
+        page: The page to read.
+        budget: Single-element list holding the number of spans left for the
+            whole document; decremented in place and stops the walk at zero.
+
+    Returns:
+        The blocks, each holding lines of spans.
     """
     try:
         raw = page.get_text("dict")
@@ -157,8 +173,8 @@ def _text_blocks(page, budget: list[int]) -> list[dict]:
                 if budget[0] <= 0:
                     return blocks
                 budget[0] -= 1
-                # alpha nul = texte invisible: couche OCR, ou trace volontairement
-                # cachee. Il est indexe et copiable malgre tout.
+                # alpha 0 = invisible text: an OCR layer, or a deliberately
+                # hidden trace. It is indexed and copyable all the same.
                 spans.append(
                     {
                         "text": sp["text"],
@@ -227,7 +243,7 @@ def _links(page) -> list[dict]:
             target = f"page {lk.get('page', 0) + 1}"
         out.append(
             {
-                "kind": LINK_KINDS.get(lk.get("kind"), "autre"),
+                "kind": LINK_KINDS.get(lk.get("kind"), "other"),
                 "target": str(target)[:SNIPPET],
                 "rect": _r(fitz.Rect(lk["from"])),
             }
@@ -260,6 +276,15 @@ def _images(page) -> list[dict]:
 
 
 def inspect_document(data: bytes) -> dict:
+    """Read everything the document carries without displaying it.
+
+    Args:
+        data: The PDF bytes.
+
+    Returns:
+        {"doc": document-level traces, "pages": per-page traces, "truncated":
+        whether the span budget ran out}.
+    """
     doc = fitz.open(stream=data, filetype="pdf")
     budget = [MAX_SPANS]
     try:

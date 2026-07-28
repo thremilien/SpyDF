@@ -1,10 +1,4 @@
-"""Tests du filigrane ajoute a l'export.
-
-Le point sensible est l'ordre des operations dans `/api/export`: la
-verification des fuites (`_verify`) doit porter sur le PDF *avant* le
-filigrane, sinon le trait diagonal du filigrane serait signale comme une
-fuite sur chaque page. Voir le commentaire dans `src/app.py`.
-"""
+"""Tests for the export watermark, whose ordering against `_verify` is the whole point."""
 
 import math
 
@@ -31,7 +25,7 @@ def client():
 
 
 def export(client, sid, zones=None, deleted_pages=(), strip_meta=True, watermark=None):
-    """Variante de tests/test_redaction.py::export qui transmet un filigrane."""
+    """Variant of tests/test_redaction.py::export that passes a watermark."""
     r = client.post(
         "/api/export",
         json={
@@ -80,34 +74,34 @@ def test_no_watermark_text_when_field_is_absent_or_blank(client, raw):
     chk = fitz.open(stream=out, filetype="pdf")
     try:
         for page in chk:
-            # aucune insertion de texte diagonal: la page ne porte que ce
-            # qu'elle portait deja.
+            # no diagonal text inserted: the page carries only what it already
+            # carried.
             assert "COPIE" not in page.get_text()
     finally:
         chk.close()
 
 
-# ---------------------------------------------------------------- ordre verify/filigrane
+# ---------------------------------------------------------------- verify/watermark order
 
 
 def test_watermark_crossing_a_zone_is_not_reported_as_a_leak(client):
-    """La regression pour l'ordre verify-puis-filigrane: le filigrane traverse
-    la zone en diagonale, et ne doit pourtant declencher aucune fuite."""
+    """The regression for the verify-then-watermark order: the watermark crosses
+    the zone diagonally and must still raise no leak."""
     doc = fitz.open()
     doc.new_page(width=595, height=842)
     data = doc.tobytes()
     doc.close()
 
     sid = open_doc(client, data)
-    # une zone assez grande, centree, pour que la diagonale du filigrane la
-    # traverse forcement (le filigrane va du coin bas-gauche au coin haut-droit).
+    # a zone large and central enough that the watermark diagonal must cross it
+    # (the watermark runs bottom-left to top-right).
     zones = {"0": [{"type": "rect", "points": rect_points((150, 300, 450, 550)), "mode": "delete"}]}
     body, out = export(client, sid, zones, watermark=WATERMARK)
 
     assert body["leak_count"] == 0, body["leaks"]
     assert not any(WATERMARK in leak["text"] for leak in body["leaks"])
 
-    # le filigrane est bien present malgre l'absence de fuite signalee
+    # the watermark is there despite no leak being reported
     chk = fitz.open(stream=out, filetype="pdf")
     try:
         assert WATERMARK in chk[0].get_text()
@@ -116,23 +110,25 @@ def test_watermark_crossing_a_zone_is_not_reported_as_a_leak(client):
 
 
 def test_real_leak_is_still_reported_with_a_watermark(client):
-    """Le filigrane ne doit pas masquer une vraie fuite. On reprend le
-    document piege de test_redaction.py (texte, annotation et champ tous
-    laisses intacts dans la zone) et on le fait passer par
-    `_apply_watermark` *avant* `_verify`, pour prouver que l'encre du
-    filigrane ne fait pas disparaitre les fuites detectees: si l'ordre
-    verify-puis-filigrane etait invers, ce test le detecterait."""
+    """The watermark must not mask a real leak.
+
+    Takes the booby-trapped document from test_redaction.py (text, annotation
+    and field all left intact inside the zone) and runs it through
+    `_apply_watermark` *before* `_verify`, proving the watermark ink does not
+    make detected leaks vanish. Were the order reversed, this test would catch
+    it.
+    """
     zone = {"rect": fitz.Rect(50, 80, 300, 140), "rects": [fitz.Rect(50, 80, 300, 140)]}
     watermarked = _apply_watermark(_doc_with_survivors(), WATERMARK)
 
     leaks = _verify(watermarked, {0: [zone]}, {0: 0})
     kinds = {lk["kind"] for lk in leaks}
-    assert kinds == {"texte", "annotation", "champ"}, leaks
+    assert kinds == {"text", "annotation", "field"}, leaks
     texts = " ".join(lk["text"] for lk in leaks)
     assert "STILLHERE" in texts
 
 
-# ---------------------------------------------------------------- geometrie
+# ---------------------------------------------------------------- geometry
 
 
 def test_watermark_ink_stays_inside_the_page_rect(client):
@@ -156,7 +152,7 @@ def test_watermark_ink_stays_inside_the_page_rect(client):
         chk.close()
 
 
-# ---------------------------------------------------------------- garde vide
+# ---------------------------------------------------------------- empty guard
 
 
 def test_watermark_only_export_succeeds(client):
@@ -179,7 +175,7 @@ def test_export_with_nothing_at_all_is_still_refused(client):
     assert r.status_code == 400
 
 
-# ---------------------------------------------------------------- pages supprimees
+# ---------------------------------------------------------------- deleted pages
 
 
 def test_watermark_applies_to_surviving_pages_after_deletion(client):
@@ -202,7 +198,7 @@ def test_watermark_applies_to_surviving_pages_after_deletion(client):
         chk.close()
 
 
-# ---------------------------------------------------------------- garanties existantes
+# ---------------------------------------------------------------- existing guarantees
 
 
 def test_redaction_guarantees_hold_with_a_watermark(client):
@@ -214,12 +210,12 @@ def test_redaction_guarantees_hold_with_a_watermark(client):
     assert body["leak_count"] == 0, body["leaks"]
 
 
-# ---------------------------------------------------------------- encodage
+# ---------------------------------------------------------------- encoding
 
 
 def test_typographic_characters_are_folded_to_latin1(client):
-    """Helvetica base-14 est du Latin-1: un tiret cadratin sorti tel quel
-    devient un glyphe parasite sur la page. Il doit etre replie, pas rendu."""
+    """Base-14 Helvetica is Latin-1: an em dash passed through as-is becomes a
+    stray glyph on the page. It must be folded, not rendered."""
     sid = open_doc(client, build_pdf())
     zones = {"0": [{"type": "rect", "points": rect_points(ZONE), "mode": "delete"}]}
     _, out = export(client, sid, zones, watermark="COPIE — NE PAS DIFFUSER")
@@ -234,10 +230,12 @@ def test_typographic_characters_are_folded_to_latin1(client):
 
 
 def test_watermark_size_does_not_depend_on_the_page_scale(client):
-    """Meme page, meme filigrane, deux echelles de MediaBox: un scan dont la
-    boite est en pixels (2480x3508) doit recevoir le meme filigrane, en
-    proportion, qu'un A4 en points (595x842). Un plafond de taille de police
-    en valeur absolue faisait retomber le second a 14 % de la diagonale."""
+    """Same page, same watermark, two MediaBox scales.
+
+    A scan whose box is in pixels (2480x3508) must get the same watermark, in
+    proportion, as an A4 in points (595x842). An absolute font-size cap dropped
+    the second one to 14% of the diagonal.
+    """
 
     def span(width, height):
         doc = fitz.open()
@@ -252,7 +250,7 @@ def test_watermark_size_does_not_depend_on_the_page_scale(client):
             hits = page.search_for("COPIE")
             assert hits, "filigrane absent"
             box = hits[0]
-            # la diagonale du texte pivote, rapportee a celle de la page
+            # the rotated text's diagonal, relative to the page's
             return math.hypot(box.width, box.height) / math.hypot(width, height)
         finally:
             chk.close()

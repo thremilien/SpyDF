@@ -20,31 +20,27 @@ from src.logs import log_event
 from src.probe import inspect_document
 
 PACKAGE_DIR = Path(__file__).parent
-RENDER_ZOOM = 4.0  # zoom de repli si le client ne demande pas de largeur
+RENDER_ZOOM = 4.0  # fallback zoom when the client asks for no width
 MIN_ZOOM = 1.5
-MAX_ZOOM = 8.0  # garde-fou memoire: 8x sur A4 = ~128 Mpx
-MOSAIC_BLOCKS = 14  # largeur en "gros pixels" d'une zone repixelisee
-STRIP_HEIGHT = 2.0  # hauteur d'une bande de redaction, en points PDF
-MAX_STRIPS = 200  # garde-fou: une zone tres haute ne genere pas mille rects
-MASK_MAX_PX = 240  # resolution du masque qui decoupe une mosaique au contour
+MAX_ZOOM = 8.0  # memory guard rail: 8x on A4 = ~128 Mpx
+MOSAIC_BLOCKS = 14  # width of a pixelated zone, in "big pixels"
+STRIP_HEIGHT = 2.0  # height of one redaction strip, in PDF points
+MAX_STRIPS = 200  # guard rail: a very tall zone must not yield a thousand rects
+MASK_MAX_PX = 240  # resolution of the mask clipping a mosaic to the outline
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
-SESSION_TTL = 2 * 3600  # un document oublie ne doit pas rester en RAM
+SESSION_TTL = 2 * 3600  # a forgotten document must not sit in RAM
 MAX_SESSIONS = 32
 
 WATERMARK_MAX_LEN = 80
 WATERMARK_MIN_SIZE = 8
-WATERMARK_DIAGONAL_RATIO = 0.78  # part de la diagonale que doit occuper le texte
-WATERMARK_FONT = "helv"  # police base-14, aucun fichier a embarquer
-# pas de plafond absolu sur la taille de police: le point PDF n'a pas de
-# taille fixe a l'ecran, et une page peut mesurer 595 points (A4) comme 2480
-# (un scan dont la MediaBox est en pixels). Un plafond en points donnerait au
-# meme filigrane 60 % de la diagonale sur la premiere et 14 % sur la seconde.
-# Le seul garde-fou est geometrique (_watermark_fit_size), donc proportionnel
-# a la page: le rendu est alors identique quelle que soit son echelle.
+WATERMARK_DIAGONAL_RATIO = 0.78  # share of the diagonal the text should span
+WATERMARK_FONT = "helv"  # base-14 font, nothing to embed
+# No absolute cap on the font size: see _watermark_fit_size, whose guard rail
+# is geometric and therefore scale-invariant.
 
-# sur certains systemes .js est devine comme application/javascript, qui ne
-# recoit pas de charset: les accents du JS arrivent alors casses dans l'UI.
+# On some systems .js is guessed as application/javascript, which gets no
+# charset, and the JS accents then reach the UI broken.
 mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
 
@@ -55,8 +51,10 @@ DOCS: dict[str, dict] = {}  # sid -> {"bytes": ..., "name": ..., "ts": ...}
 
 
 def _sweep():
-    """Rien n'est persiste, mais un PDF garde en RAM tout ce qu'on vient d'en
-    retirer: on ne laisse pas trainer les sessions oubliees.
+    """Drop expired and surplus sessions.
+
+    Nothing is persisted, but a held PDF keeps in RAM everything just removed
+    from it, so forgotten sessions are not left lying around.
     """
     now = time.time()
     for k in [k for k, v in DOCS.items() if now - v["ts"] > SESSION_TTL]:
@@ -65,6 +63,7 @@ def _sweep():
         DOCS.pop(min(DOCS, key=lambda k: DOCS[k]["ts"]), None)
 
 
+# Stores a document under a fresh session id and returns it.
 def _put(name: str, data: bytes) -> str:
     _sweep()
     key = uuid.uuid4().hex
@@ -72,39 +71,57 @@ def _put(name: str, data: bytes) -> str:
     return key
 
 
+# Fetches a live session, or raises 404.
 def _get(key: str) -> dict:
     _sweep()
     entry = DOCS.get(key)
     if not entry:
-        raise HTTPException(404, "session inconnue ou expiree")
+        raise HTTPException(404, "unknown or expired session")
     return entry
 
 
 def _safe_filename(name: str) -> str:
-    """Le nom vient du fichier depose: il ne doit ni casser l'en-tete
-    Content-Disposition ni ramener un chemin.
+    """Sanitise an uploaded file name.
+
+    It reaches us from the dropped file, so it must neither break the
+    Content-Disposition header nor carry a path.
+
+    Args:
+        name: The name as sent by the browser.
+
+    Returns:
+        An ASCII name, at most 100 characters, never empty.
     """
     name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
     name = re.sub(r"[^A-Za-z0-9._ -]", "_", os.path.basename(name)).strip(" .")
     return name[:100] or "document.pdf"
 
 
-SID_LOG_LEN = 8  # un sid entier est une capacite d'acces (/api/download/{key}):
-# on ne loggue jamais que ce prefixe, jamais le sid complet.
+# A whole sid is an access capability (/api/download/{key}), so only this
+# prefix is ever logged.
+SID_LOG_LEN = 8
+# The user-agent is client-supplied: bound it before logging it.
+UA_MAX_LEN = 120
 
-UA_MAX_LEN = 120  # le user-agent est fourni par le client: on le borne avant
-# de le journaliser, il n'a rien d'un champ de confiance.
 
-
+# The only part of a session id that may reach a log line.
 def _sid_prefix(sid: str) -> str:
     return (sid or "")[:SID_LOG_LEN]
 
 
 def _log_ip_fields(request: Request) -> dict:
-    """request.client.host est l'adresse reelle du pair TCP. X-Forwarded-For
-    est un en-tete fourni par le client (ou par le reverse proxy Dokploy /
-    Traefik en amont) et n'est donc pas fiable a lui seul: on le journalise a
-    part, sans jamais l'y substituer.
+    """Build the address fields of a log line.
+
+    `request.client.host` is the real TCP peer. X-Forwarded-For is supplied by
+    the client (or by the Dokploy/Traefik reverse proxy in front) and is
+    therefore untrusted on its own: it is logged as a separate field, never
+    substituted for the peer address.
+
+    Args:
+        request: The incoming request.
+
+    Returns:
+        {"ip": ...} plus {"xff": ...} when the header is present.
     """
     fields = {"ip": request.client.host if request.client else "?"}
     xff = request.headers.get("x-forwarded-for")
@@ -115,12 +132,24 @@ def _log_ip_fields(request: Request) -> dict:
 
 @app.post("/api/open")
 async def api_open(request: Request, file: UploadFile = File(...)):
+    """Open a PDF and hold it in memory under a fresh session id.
+
+    Args:
+        request: The incoming request, read for its address fields.
+        file: The uploaded PDF.
+
+    Returns:
+        {"sid": session id, "name": sanitised name, "pages": page geometry}.
+
+    Raises:
+        HTTPException: 400 empty, unreadable or password-protected, 413 too big.
+    """
     start = time.perf_counter()
     ip_fields = _log_ip_fields(request)
     data = await file.read()
     if not data:
         log_event("import_rejected", level=logging.WARNING, reason="empty", **ip_fields)
-        raise HTTPException(400, "fichier vide")
+        raise HTTPException(400, "empty file")
     if len(data) > MAX_UPLOAD_BYTES:
         log_event(
             "import_rejected",
@@ -129,17 +158,17 @@ async def api_open(request: Request, file: UploadFile = File(...)):
             size=len(data),
             **ip_fields,
         )
-        raise HTTPException(413, "fichier trop volumineux (200 Mo maximum)")
+        raise HTTPException(413, "file too large (200 MB maximum)")
     try:
         doc = fitz.open(stream=data, filetype="pdf")
-        # un PDF chiffre s'ouvre, mais ses pages sont illisibles: sans mot de
-        # passe on ne pourrait ni rendre ni rediger quoi que ce soit.
+        # An encrypted PDF opens, but its pages are unreadable: without the
+        # password nothing could be rendered or redacted.
         if doc.needs_pass:
             doc.close()
             log_event(
                 "import_rejected", level=logging.WARNING, reason="password_protected", **ip_fields
             )
-            raise HTTPException(400, "PDF protege par mot de passe")
+            raise HTTPException(400, "password-protected PDF")
         pages = [
             {"w": p.rect.width, "h": p.rect.height, "x0": p.rect.x0, "y0": p.rect.y0} for p in doc
         ]
@@ -147,19 +176,18 @@ async def api_open(request: Request, file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
-        # le message d'exception peut en principe citer du contenu du fichier:
-        # on ne le journalise pas, et jamais le nom du fichier non plus.
+        # The exception text can in principle quote file content, so it is not
+        # logged — and neither is the file name.
         log_event("import_rejected", level=logging.WARNING, reason="unreadable", **ip_fields)
-        raise HTTPException(400, f"PDF illisible: {e}") from e
+        raise HTTPException(400, f"unreadable PDF: {e}") from e
 
     name = _safe_filename(file.filename or "document.pdf")
     sid = _put(name, data)
 
-    # Regle de confidentialite: le nom de fichier depose est potentiellement
-    # identifiant ("copie_jean_dupont.pdf"). Il n'est journalise que si
-    # l'operateur l'a explicitement demande via SPYDF_LOG_FILENAMES=1; par
-    # defaut il n'apparait nulle part dans les logs. Ne pas "ameliorer" cela
-    # en le rajoutant sans cette condition.
+    # Privacy rule: an uploaded file name is potentially identifying
+    # ("copie_jean_dupont.pdf"), so it is logged only when the operator asked
+    # for it with SPYDF_LOG_FILENAMES=1. Do not "improve" this by dropping the
+    # condition.
     fields = {
         "sid": _sid_prefix(sid),
         "size": len(data),
@@ -176,16 +204,29 @@ async def api_open(request: Request, file: UploadFile = File(...)):
 
 @app.get("/api/page/{sid}/{n}")
 def api_page(sid: str, n: int, w: int = 0):
-    """`w` = largeur voulue en pixels ecran reels (CSS x devicePixelRatio).
-    Un PDF est vectoriel: il n'y a pas de "qualite native", on choisit une
-    resolution. On rend donc exactement ce que l'ecran affiche, plutot qu'un
-    zoom fixe qui serait soit flou, soit du gaspillage.
+    """Render one page to PNG at the resolution the screen actually shows.
+
+    A PDF is vector art: there is no "native quality", a resolution has to be
+    picked. Rendering exactly what the screen displays beats a fixed zoom, which
+    would be either blurry or wasteful.
+
+    Args:
+        sid: Session id.
+        n: Zero-based page number.
+        w: Wanted width in real screen pixels (CSS x devicePixelRatio). Zero
+            falls back to RENDER_ZOOM.
+
+    Returns:
+        The PNG, marked no-store.
+
+    Raises:
+        HTTPException: 404 for an unknown session or an out-of-range page.
     """
     entry = _get(sid)
     doc = fitz.open(stream=entry["bytes"], filetype="pdf")
     if not 0 <= n < len(doc):
         doc.close()
-        raise HTTPException(404, "page hors limites")
+        raise HTTPException(404, "page out of range")
     page = doc[n]
     if w > 0 and page.rect.width:
         zoom = min(max(w / page.rect.width, MIN_ZOOM), MAX_ZOOM)
@@ -199,18 +240,23 @@ def api_page(sid: str, n: int, w: int = 0):
 
 @app.get("/api/inspect/{sid}")
 def api_inspect(sid: str):
-    """Tout ce que le document transporte sans l'afficher: couche de texte,
-    metadonnees, signets, annotations, champs, pieces jointes, calques, liens,
-    JavaScript. Lecture seule; c'est l'export qui decide de ce qui disparait.
+    """Report everything the document carries without displaying it.
+
+    Text layer, metadata, bookmarks, annotations, fields, attachments, layers,
+    links, JavaScript. Read-only; the export decides what actually disappears.
+
+    Args:
+        sid: Session id.
+
+    Returns:
+        The `src.probe.inspect_document` payload, as JSON.
     """
     entry = _get(sid)
     return JSONResponse(inspect_document(entry["bytes"]))
 
 
+# A rectangular zone has nothing to cut up: its outline *is* its bounding box.
 def _is_box(points, rect) -> bool:
-    """Une zone rectangulaire n'a rien a decouper: son contour *est* son
-    rectangle englobant.
-    """
     return len(points) == 4 and all(
         (abs(p.x - rect.x0) < 0.01 or abs(p.x - rect.x1) < 0.01)
         and (abs(p.y - rect.y0) < 0.01 or abs(p.y - rect.y1) < 0.01)
@@ -219,11 +265,18 @@ def _is_box(points, rect) -> bool:
 
 
 def _spans(points, y):
-    """Intervalles horizontaux interieurs au contour a l'ordonnee y.
+    """Horizontal intervals lying inside the outline at ordinate y.
 
-    Regle non-nulle (et non pair-impair): c'est celle qu'appliquent deja le
-    cache blanc pose par PyMuPDF et l'apercu SVG du navigateur. Un trace libre
-    qui se recoupe est donc plein ici comme il l'est a l'ecran.
+    Uses the non-zero winding rule (not even-odd), which is what the white cover
+    laid down by PyMuPDF and the browser's SVG preview already apply. A freehand
+    stroke crossing itself is therefore solid here as it is on screen.
+
+    Args:
+        points: The outline vertices.
+        y: The scan line.
+
+    Returns:
+        (start, end) pairs, left to right.
     """
     xs = []
     for i, a in enumerate(points):
@@ -245,6 +298,7 @@ def _spans(points, y):
     return out
 
 
+# Merges overlapping intervals into the fewest disjoint ones.
 def _merge(spans):
     out = []
     for a, b in sorted(spans):
@@ -256,18 +310,25 @@ def _merge(spans):
 
 
 def _zone_rects(points, rect):
-    """Les rectangles a rediger pour une zone donnee.
+    """Cut a zone into the rectangles to redact.
 
-    PyMuPDF ne sait rediger que des rectangles. Rediger le rectangle englobant
-    d'un polygone ne se contente pas de supprimer trop de texte: sur un examen
-    scanne la page est une image, et PDF_REDACT_IMAGE_PIXELS en detruit alors
-    tous les pixels, si bien que le rectangle entier vire au blanc sous un
-    cache qui, lui, suivait le contour. On decoupe donc la zone en bandes
-    horizontales qui epousent le trace.
+    PyMuPDF can only redact rectangles. Redacting a polygon's bounding box does
+    not merely delete too much text: on a scanned exam the page is an image, so
+    PDF_REDACT_IMAGE_PIXELS destroys every pixel of that box and the whole
+    rectangle turns white under a cover that did follow the outline. The zone is
+    therefore cut into horizontal strips hugging the stroke.
 
-    Les bandes debordent legerement le contour (union des trois lignes de
-    balayage de chaque bande): sur-effacer un peu est acceptable, laisser
-    survivre du contenu a l'interieur du trace ne l'est pas.
+    Strips overrun the outline slightly (the union of each strip's three scan
+    lines): over-erasing a little is acceptable, leaving content alive inside the
+    stroke is not.
+
+    Args:
+        points: The outline vertices.
+        rect: Their bounding box.
+
+    Returns:
+        The rectangles to redact; the bounding box itself for a box zone, or for
+        a degenerate outline with no area.
     """
     if _is_box(points, rect):
         return [rect]
@@ -281,13 +342,21 @@ def _zone_rects(points, rect):
         for a, b in _merge(sampled):
             if b - a > 0.05:
                 out.append(fitz.Rect(a, y0, b, y1))
-    # contour degenere (aire nulle): mieux vaut son rectangle que rien du tout
+    # degenerate outline (no area): its rectangle beats nothing at all
     return out or [rect]
 
 
 def _shape_mask(points, rect):
-    """Masque alpha du contour, a la taille du rectangle englobant: repose sur
-    la mosaique, il l'empeche de deborder du trace.
+    """Build the alpha mask of an outline, sized to its bounding box.
+
+    Laid over the mosaic, it keeps the mosaic from spilling outside the stroke.
+
+    Args:
+        points: The outline vertices.
+        rect: Their bounding box.
+
+    Returns:
+        A greyscale pixmap, or None for an empty rectangle.
     """
     if rect.width <= 0 or rect.height <= 0:
         return None
@@ -306,8 +375,17 @@ def _shape_mask(points, rect):
 
 
 def _mosaic_pixmap(page, rect):
-    """Rend la zone en tout petit: en la reposant a sa taille d'origine on
-    obtient une mosaique illisible du contenu initial.
+    """Render a zone very small, to be laid back at full size.
+
+    Downsampled that hard, the result is an unreadable mosaic of the original
+    content.
+
+    Args:
+        page: The page to sample, before any redaction.
+        rect: The zone's bounding box.
+
+    Returns:
+        The tiny pixmap, or None if it could not be rendered.
     """
     w, h = max(rect.width, 1.0), max(rect.height, 1.0)
     s = MOSAIC_BLOCKS / max(w, h)
@@ -319,10 +397,14 @@ def _mosaic_pixmap(page, rect):
 
 
 def _purge_annots(page, rects):
-    """apply_redactions ne touche ni aux annotations ni aux champs de
-    formulaire: une note de correction garde le nom de son auteur et un champ
-    garde sa valeur, meme entierement recouverts par une zone. On les supprime
-    donc explicitement des qu'ils touchent une zone.
+    """Delete every annotation and form field touching one of the rects.
+
+    apply_redactions leaves both alone: a marker's note keeps its author name
+    and a field keeps its value even when a zone covers them entirely.
+
+    Args:
+        page: The page to purge.
+        rects: The rectangles about to be redacted.
     """
     for a in list(page.annots()):
         if a.type[0] == fitz.PDF_ANNOT_REDACT:
@@ -334,18 +416,22 @@ def _purge_annots(page, rects):
             page.delete_widget(w)
 
 
+# A layer name ("Jean Dupont's copy") survives in /OCProperties even once its
+# content has been redacted.
 def _rename_layers(doc):
-    """Le nom d'un calque ("Copie de Jean Dupont") survit dans /OCProperties
-    meme quand son contenu a ete redige.
-    """
     for i, xref in enumerate(doc.get_ocgs() or {}, 1):
-        doc.xref_set_key(xref, "Name", fitz.get_pdf_str(f"calque {i}"))
+        doc.xref_set_key(xref, "Name", fitz.get_pdf_str(f"layer {i}"))
 
 
 def _scrub_document(doc):
-    """Traces d'identite qui ne vivent pas dans le contenu des pages et que la
-    redaction laisse donc intactes: metadonnees, XMP, signets (souvent le nom
-    de l'eleve), pieces jointes, JavaScript, liens, reponses de formulaire.
+    """Strip the identifying traces that do not live in the page content.
+
+    Redaction leaves these untouched: metadata, XMP, bookmarks (often the
+    student's name), attachments, JavaScript, links and form answers. Each step
+    is best-effort; one unsupported by the file must not fail the export.
+
+    Args:
+        doc: The document to scrub, in place.
     """
     doc.set_metadata({})
     for step in (
@@ -358,10 +444,9 @@ def _scrub_document(doc):
             step()
 
 
-# Helvetica base-14 n'encode que du Latin-1: un tiret cadratin ou une
-# apostrophe typographique y ressort en glyphe parasite ("COPIE · NE PAS"
-# pour un "—" tape par l'operateur). Les caracteres francais accentues, eux,
-# sont dans Latin-1 et passent tels quels.
+# Base-14 Helvetica only encodes Latin-1: an em dash or a typographic
+# apostrophe comes out as a stray glyph. Accented characters are in Latin-1 and
+# pass through untouched.
 _WATERMARK_FOLD = str.maketrans(
     {
         "–": "-",
@@ -379,17 +464,23 @@ _WATERMARK_FOLD = str.maketrans(
 
 
 def _normalize_watermark(raw) -> str:
-    """Nettoie le filigrane fourni par le client: pas de saut de ligne (casserait
-    la mise en page sur une seule ligne), pas de caractere de controle, longueur
-    bornee, et rien qui sorte de Latin-1. Une chaine vide ou blanche equivaut a
-    "pas de filigrane".
+    """Clean the watermark supplied by the client.
+
+    No newline (it would break the single-line layout), no control character,
+    bounded length, nothing outside Latin-1.
+
+    Args:
+        raw: The value received, of any type.
+
+    Returns:
+        The cleaned text; empty means "no watermark".
     """
     if not isinstance(raw, str):
         return ""
     text = "".join(c if c.isprintable() else " " for c in raw)
     text = text.translate(_WATERMARK_FOLD)
-    # ce qui reste hors Latin-1 (emoji, alphabet non latin) n'a pas de glyphe
-    # dans la police: on le replie en ASCII, sinon on le laisse tomber.
+    # whatever is left outside Latin-1 (emoji, non-Latin scripts) has no glyph
+    # in the font: fold it to ASCII, or drop it.
     text = "".join(
         c
         if c.isascii() or _in_latin1(c)
@@ -400,6 +491,7 @@ def _normalize_watermark(raw) -> str:
     return text[:WATERMARK_MAX_LEN]
 
 
+# Whether a character has a glyph in the base-14 font.
 def _in_latin1(c: str) -> bool:
     try:
         c.encode("latin-1")
@@ -409,16 +501,25 @@ def _in_latin1(c: str) -> bool:
 
 
 _WATERMARK_FONT_METRICS = fitz.Font(WATERMARK_FONT)
-# hauteur d'une ligne de texte, en multiples de la taille de police: du haut
-# des ascendantes au bas des descendantes.
+# line height in multiples of the font size, ascender top to descender bottom.
 _WATERMARK_LINE_HEIGHT = _WATERMARK_FONT_METRICS.ascender - _WATERMARK_FONT_METRICS.descender
 
 
 def _watermark_fit_size(w0: float, rect) -> float:
-    """Taille de police maximale pour que la boite du texte, pivotee de l'angle
-    de la diagonale, tienne encore dans la page. `w0` est la largeur du texte a
-    la taille 1. Le resultat est proportionnel a la page: doubler ses
-    dimensions double la taille de police, et le rendu est identique.
+    """Largest font size whose rotated text box still fits inside the page.
+
+    The result is proportional to the page: doubling its dimensions doubles the
+    font size, so the rendering is identical at any scale. This is the only cap
+    on the watermark size — an absolute one in points would make the same
+    watermark span 60% of an A4's diagonal and 14% of a scan whose MediaBox is
+    in pixels.
+
+    Args:
+        w0: Width of the text at font size 1.
+        rect: The page rectangle.
+
+    Returns:
+        The maximum font size, in points.
     """
     denom_w = w0 + _WATERMARK_LINE_HEIGHT * rect.height / rect.width
     denom_h = w0 + _WATERMARK_LINE_HEIGHT * rect.width / rect.height
@@ -426,9 +527,15 @@ def _watermark_fit_size(w0: float, rect) -> float:
 
 
 def _apply_watermark(data: bytes, text: str) -> bytes:
-    """Tamponne `text` en diagonal sur chaque page, du coin bas-gauche vers le
-    coin haut-droit. Toute erreur ici ne doit pas faire echouer l'export: un
-    export sans filigrane vaut mieux qu'une export perdu.
+    """Stamp `text` diagonally across every page, bottom-left to top-right.
+
+    Args:
+        data: The exported PDF bytes.
+        text: The normalised watermark.
+
+    Returns:
+        The stamped PDF, or `data` unchanged on any failure — an export without
+        its watermark beats an export the user never gets.
     """
     try:
         doc = fitz.open(stream=data, filetype="pdf")
@@ -445,8 +552,8 @@ def _apply_watermark(data: bytes, text: str) -> bytes:
                 try:
                     w0 = fitz.get_text_length(stamp, fontname=WATERMARK_FONT, fontsize=1)
                 except Exception:
-                    # caractere hors Latin-1 (base-14 Helvetica): on retombe sur
-                    # une version ASCII plutot que de renoncer au filigrane.
+                    # character outside Latin-1: fall back to an ASCII version
+                    # rather than give up on the watermark.
                     stamp = unicodedata.normalize("NFKD", stamp).encode("ascii", "ignore").decode()
                     if not stamp:
                         continue
@@ -456,25 +563,18 @@ def _apply_watermark(data: bytes, text: str) -> bytes:
 
                 fontsize = diag * WATERMARK_DIAGONAL_RATIO / w0
 
-                # garde-fou geometrique: le texte n'est pas juste une ligne
-                # sans epaisseur, il a aussi une hauteur typographique. Une
-                # fois la boite (largeur x hauteur) pivotee de l'angle de la
-                # diagonale, elle peut deborder du rectangle de la page - a
-                # fortiori sur une page etroite ou avec un texte tres court,
-                # qui reclame une police enorme. On borne donc la taille a ce
-                # que la boite pivotee tient dans la page, quitte a rester
-                # en-dessous du ratio vise ci-dessus.
+                # the text has a typographic height too, so its rotated box can
+                # overrun the page even when its width does not.
                 fit_cap = _watermark_fit_size(w0, rect)
                 fontsize = min(fontsize, fit_cap)
 
-                # le plancher ne doit pas rouvrir la porte au debordement:
-                # sur une page minuscule, tenir dans la page prime.
+                # the floor must not reopen the door to overflow: on a tiny
+                # page, fitting inside it wins.
                 fontsize = min(max(fontsize, WATERMARK_MIN_SIZE), fit_cap)
 
                 tl = fitz.get_text_length(stamp, fontname=WATERMARK_FONT, fontsize=fontsize)
-                # centre le texte (largeur + hauteur typographique) sur le
-                # pivot: apres rotation autour de ce meme point, il reste
-                # centre sur la page quel que soit l'angle.
+                # centre the text on the pivot: after rotating about that same
+                # point it stays centred on the page at any angle.
                 vert_off = (
                     (_WATERMARK_FONT_METRICS.ascender + _WATERMARK_FONT_METRICS.descender)
                     / 2
@@ -503,13 +603,12 @@ def _apply_watermark(data: bytes, text: str) -> bytes:
         return data
 
 
-LEAK_COVERAGE = 0.15  # part d'un mot dans la zone a partir de laquelle il fuit
+LEAK_COVERAGE = 0.15  # share of a word inside the zone above which it leaks
 
 
+# Share of `rect` covered by the redacted strips. Strips never overlap (one per
+# scan line), so their areas simply add up.
 def _covered_fraction(rect, rects) -> float:
-    """Part de `rect` couverte par les bandes redigees. Les bandes ne se
-    chevauchent pas (une par ligne de balayage), leurs aires s'additionnent.
-    """
     area = rect.get_area()
     if area <= 0:
         return 0.0
@@ -517,13 +616,20 @@ def _covered_fraction(rect, rects) -> float:
 
 
 def _verify(out: bytes, zones_by_page, page_map):
-    """Relecture du PDF reellement produit (et non du document en memoire):
-    reste-t-il du texte, une annotation ou un champ dans les zones ?
+    """Re-read the PDF actually produced and look for survivors inside the zones.
 
-    Un mot n'est signale que si la zone mordait vraiment dessus. Depuis que la
-    redaction suit le contour dessine et non le rectangle englobant, un mot
-    qui frole le trace de quelques dixiemes de point est monnaie courante: le
-    signaler noierait les vraies fuites sous des avertissements sans objet.
+    Reads the output bytes, not the in-memory document. A word is reported only
+    when the zone really bit into it: now that redaction follows the drawn
+    outline rather than the bounding box, a word grazing the stroke by tenths of
+    a point is routine, and reporting it would drown real leaks in noise.
+
+    Args:
+        out: The exported PDF bytes.
+        zones_by_page: Parsed zones, keyed by original page number.
+        page_map: Original page number -> page number in the export.
+
+    Returns:
+        One entry per survivor: {"page", "kind", "text"}.
     """
     leaks = []
     chk = fitz.open(stream=out, filetype="pdf")
@@ -539,7 +645,7 @@ def _verify(out: bytes, zones_by_page, page_map):
             rects = [r for z in zs for r in z["rects"]]
             for w in page.get_text("words"):
                 if _covered_fraction(fitz.Rect(w[:4]), rects) >= LEAK_COVERAGE:
-                    leaks.append({"page": new_no + 1, "kind": "texte", "text": w[4]})
+                    leaks.append({"page": new_no + 1, "kind": "text", "text": w[4]})
             for a in page.annots():
                 if any(a.rect.intersects(r) for r in rects):
                     leaks.append(
@@ -551,7 +657,7 @@ def _verify(out: bytes, zones_by_page, page_map):
                     )
             for w in page.widgets():
                 if any(w.rect.intersects(r) for r in rects):
-                    leaks.append({"page": new_no + 1, "kind": "champ", "text": w.field_name or "?"})
+                    leaks.append({"page": new_no + 1, "kind": "field", "text": w.field_name or "?"})
     finally:
         chk.close()
     return leaks
@@ -559,6 +665,27 @@ def _verify(out: bytes, zones_by_page, page_map):
 
 @app.post("/api/export")
 async def api_export(request: Request, payload: dict):
+    """Redact the session document and hold the result for download.
+
+    Zones arrive as {"3": [{"points": [[x, y], ...], "mode": "delete"}, ...]} in
+    PDF coordinates, "points" being the outline of the zone (a rectangle is 4
+    corners, but a polygon or freehand stroke works too). Everything follows that
+    outline: redaction through the strips of `_zone_rects`, the white cover, and
+    the mosaic through its mask. Nothing outside the stroke is ever erased or
+    covered.
+
+    Args:
+        request: The incoming request.
+        payload: {"sid", "zones", "deleted_pages", "strip_meta", "watermark"}.
+
+    Returns:
+        {"download", "filename", "leaks", "leak_count"} — `leaks` is capped at 20
+        entries, `leak_count` is the real total.
+
+    Raises:
+        HTTPException: 404 unknown session, 400 with nothing to do or when every
+            page would be deleted.
+    """
     start = time.perf_counter()
     sid_prefix = _sid_prefix(payload.get("sid") or "")
     try:
@@ -569,11 +696,6 @@ async def api_export(request: Request, payload: dict):
         )
         raise
 
-    # {"3": [{"points": [[x,y], ...], "mode": "delete"|"pixelate"}, ...]} en coordonnees PDF.
-    # "points" est le contour de la zone (rectangle = 4 coins, mais aussi
-    # polygone ou trace libre). Tout suit ce contour: la redaction via les
-    # bandes de _zone_rects, le cache blanc, et la mosaique via son masque.
-    # Rien n'est jamais efface ni recouvert hors du trace.
     raw = payload.get("zones") or {}
     zones_by_page: dict[int, list[dict]] = {}
     for k, v in raw.items():
@@ -601,14 +723,14 @@ async def api_export(request: Request, payload: dict):
             zones_by_page[int(k)] = parsed
 
     deleted_pages = {int(p) for p in (payload.get("deleted_pages") or [])}
-    # pas besoin de rediger une page qui va disparaitre entierement
+    # no need to redact a page that is about to disappear entirely
     zones_by_page = {p: zs for p, zs in zones_by_page.items() if p not in deleted_pages}
 
     watermark = _normalize_watermark(payload.get("watermark"))
 
     if not zones_by_page and not deleted_pages and not watermark:
         log_event("export_rejected", level=logging.WARNING, reason="nothing_to_do", sid=sid_prefix)
-        raise HTTPException(400, "aucune zone, page supprimee ou filigrane")
+        raise HTTPException(400, "no zone, deleted page or watermark")
 
     strip_meta = bool(payload.get("strip_meta", True))
 
@@ -619,28 +741,27 @@ async def api_export(request: Request, payload: dict):
         log_event(
             "export_rejected", level=logging.WARNING, reason="all_pages_deleted", sid=sid_prefix
         )
-        raise HTTPException(400, "impossible de supprimer toutes les pages")
+        raise HTTPException(400, "cannot delete every page")
 
     for pno, zs in zones_by_page.items():
         page = doc[pno]
         delete_zs = [z for z in zs if z["mode"] == "delete"]
         pixel_zs = [z for z in zs if z["mode"] == "pixelate"]
 
-        # 1. pour les zones "repixeliser", on capture d'abord une version
-        # fortement sous-echantillonnee du contenu d'origine (illisible), avant
-        # toute redaction. C'est cette mosaique qui sera reposee ensuite.
+        # 1. for "pixelate" zones, first capture a heavily downsampled version
+        # of the original content, before any redaction: that is the mosaic laid
+        # back down in step 4.
         mosaics = []
         for z in pixel_zs:
             pm = _mosaic_pixmap(page, z["rect"])
             if pm:
                 mosaics.append((z, pm))
 
-        # 2. redaction reelle de TOUTES les zones: le texte est supprime, les
-        # pixels des images couvertes sont detruits (pas seulement masques) et
-        # les traces vectorielles qui touchent une zone sont retirees.
-        # LINE_ART_REMOVE_IF_TOUCHED est indispensable: par defaut PyMuPDF ne
-        # retire qu'un trace *entierement* contenu dans la zone, si bien qu'une
-        # signature qui deborde survivait intacte sous le cache blanc.
+        # 2. real redaction of EVERY zone: text is deleted, covered image
+        # pixels are destroyed rather than masked, and line art touching a zone
+        # is removed. LINE_ART_REMOVE_IF_TOUCHED is essential: by default
+        # PyMuPDF only drops a stroke *entirely* inside the zone, so a signature
+        # running past the edge survived intact under the white cover.
         rects = [r for z in zs for r in z["rects"]]
         _purge_annots(page, rects)
         for r in rects:
@@ -651,7 +772,7 @@ async def api_export(request: Request, payload: dict):
             text=fitz.PDF_REDACT_TEXT_REMOVE,
         )
 
-        # 3. zones "supprimer": cache blanc suivant le contour exact.
+        # 3. "delete" zones: a white cover following the exact outline.
         if delete_zs:
             shape = page.new_shape()
             for z in delete_zs:
@@ -659,17 +780,17 @@ async def api_export(request: Request, payload: dict):
                 shape.finish(fill=(1, 1, 1), color=(1, 1, 1), closePath=True)
             shape.commit()
 
-        # 4. zones "repixeliser": on repose la mosaique par-dessus le vide.
-        # keep_proportion=False: la mosaique fait quelques pixels de cote, ses
-        # proportions arrondies ne sont pas exactement celles de la zone, et
-        # une image centree y laisserait deux bandes de contenu d'origine.
+        # 4. "pixelate" zones: lay the mosaic back over the emptied area.
+        # keep_proportion=False because the mosaic is a few pixels across, its
+        # rounded proportions are not exactly the zone's, and a centred image
+        # would leave two strips of original content showing.
         for z, pm in mosaics:
             rect = z["rect"]
             if z["box"]:
                 page.insert_image(rect, pixmap=pm, keep_proportion=False)
                 continue
-            # zone non rectangulaire: la mosaique est decoupee au contour,
-            # sinon elle recouvrirait tout le rectangle englobant.
+            # non-rectangular zone: the mosaic is clipped to the outline, or it
+            # would cover the whole bounding box.
             mask = _shape_mask(z["points"], rect)
             if mask is None:
                 continue
@@ -677,7 +798,7 @@ async def api_export(request: Request, payload: dict):
                 rect, stream=pm.tobytes("png"), mask=mask.tobytes("png"), keep_proportion=False
             )
 
-    # numero de page d'origine -> numero dans le document exporte
+    # original page number -> page number in the exported document
     page_map = {p: p - sum(1 for d in deleted_pages if d < p) for p in zones_by_page}
 
     if deleted_pages:
@@ -686,18 +807,17 @@ async def api_export(request: Request, payload: dict):
     if strip_meta:
         _scrub_document(doc)
 
-    # garbage=4 + clean: les objets devenus orphelins (anciennes images, flux de
-    # contenu remplaces) sont reellement retires du fichier, pas seulement
-    # dereferences comme le ferait une sauvegarde incrementale.
+    # garbage=4 + clean: objects left orphaned (old images, replaced content
+    # streams) are really removed from the file, not merely dereferenced as an
+    # incremental save would do.
     out = doc.tobytes(garbage=4, deflate=True, clean=True)
     doc.close()
 
-    # la verification porte sur le PDF tel qu'exporte, AVANT le filigrane: un
-    # filigrane diagonal traverse forcement les zones redigees, et le signaler
-    # comme fuite noierait les vraies fuites sous du bruit garanti sur chaque
-    # page. Filtrer les fuites qui "ressemblent" au filigrane serait pire:
-    # une vraie fuite dont le texte coincide avec le filigrane passerait
-    # alors inapercue. Donc: on verifie d'abord, on tamponne ensuite.
+    # Verification runs on the PDF as exported, BEFORE the watermark: a diagonal
+    # watermark necessarily crosses the redacted zones, and reporting it would
+    # drown real leaks in guaranteed noise. Filtering leaks that merely match the
+    # watermark text would be worse — a real leak saying the same thing would
+    # slip through. So: verify first, stamp second.
     leaks = _verify(out, zones_by_page, page_map)
     if watermark:
         out = _apply_watermark(out, watermark)
@@ -705,11 +825,10 @@ async def api_export(request: Request, payload: dict):
     base = os.path.splitext(entry["name"])[0] or "document"
     key = _put(f"{base}_redacted.pdf", out)
 
-    # Regle de confidentialite: les entrees de fuite de _verify() contiennent
-    # du texte litteralement extrait du document (les mots que l'utilisateur
-    # cherchait justement a effacer), et le filigrane est du texte libre saisi
-    # par l'operateur. On ne journalise donc que leur nombre / leur presence,
-    # jamais leur contenu — ne pas "ameliorer" ceci en y ajoutant le texte.
+    # Privacy rule: the leak entries from _verify() hold text taken literally
+    # from the document (the very words the user was erasing), and the watermark
+    # is free text typed by the operator. Only their count and presence are
+    # logged, never their content — do not "improve" this by adding the text.
     log_event(
         "export",
         sid=sid_prefix,
@@ -732,6 +851,7 @@ async def api_export(request: Request, payload: dict):
     )
 
 
+# Serves an exported PDF as an attachment.
 @app.get("/api/download/{key}")
 def api_download(key: str):
     entry = _get(key)
@@ -746,6 +866,7 @@ def api_download(key: str):
     )
 
 
+# The single page of the app; logs one connection event.
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
     ua = request.headers.get("user-agent", "")[:UA_MAX_LEN]

@@ -50,7 +50,14 @@ intersecting a zone are deleted explicitly.
 ### The inspector pane
 
 Opening a PDF in a reader only shows you a picture of it. The right-hand pane
-writes out, in plain text, what the file actually carries:
+redraws each page at the exact size of the one on the left, empty except for
+what the file carries without showing it — each item at the position it really
+occupies, so the two panes read one on top of the other. Because the pages
+match, scrolling is synchronised both ways: whichever pane you scroll takes
+the lead and the other follows to the same page at the same height.
+
+What has no position on any page (metadata, bookmarks, scripts…) lives in the
+column on the far left. Between them, the pane accounts for:
 
 - the **indexed text layer** — what is selectable, copyable and searchable,
   including any **invisible text** (an OCR layer under a scan, or text hidden
@@ -63,7 +70,9 @@ writes out, in plain text, what the file actually carries:
 
 Every item is marked *effacé* or *conservé* according to the zones you have
 drawn and the scrubbing checkbox, with a count of what would still leak, so
-you can see the result before exporting. The pane is read-only.
+you can see the result before exporting. Your zones are echoed onto the ghost
+pages, which is what makes a near-miss visible: text sitting just outside an
+outline stays black and counted. The pane is read-only.
 
 Three views from the toolbar: document only, both (default), hidden content
 only.
@@ -80,8 +89,6 @@ failed redaction is visible rather than silent.
 
 `Ctrl+Z` / `Ctrl+Y` undo and redo. `Tab` moves between zones, `Enter` opens
 the selected zone's menu, `Suppr` deletes it, `Échap` cancels.
-
-Set `PORT` to change the listening port (default `8765`).
 
 ## Development
 
@@ -106,9 +113,48 @@ any decompressed stream of the result.
 - `src/static/inspector.js` — the inspector pane
 - `tests/` — regression tests
 
-## Docker
+## Running it
+
+### Locally
+
+```bash
+uv sync
+uv run main.py
+```
+
+Binds `127.0.0.1:8765` and opens your browser. Set `PORT` to change the port,
+`HOST` to change the interface.
+
+### Locally, in Docker
 
 ```bash
 docker build -t spydf .
 docker run --rm -p 8765:8765 spydf
 ```
+
+The image sets `HOST=0.0.0.0` so the app is reachable from outside the
+container; without it uvicorn would bind to the container's own loopback and
+the published port would answer nothing.
+
+### Deployed (Dokploy)
+
+`docker-compose.yml` is the deploy descriptor, built from the same Dockerfile.
+Point a Dokploy **Compose** application at this repo; it runs
+
+```bash
+docker compose -f ./docker-compose.yml up -d --build
+```
+
+The service publishes `8765:8765`, so the app answers on the host directly at
+`http://<server>:8765`. It also joins `dokploy-network`, which lets you attach
+a domain from Dokploy's **Domains** tab (service `spydf`, port `8765`) and go
+through Traefik instead. That network is declared `external` because Dokploy's
+installer creates it — on a machine without it `docker compose up` fails, so
+locally use the plain `docker run` above.
+
+The app has **no authentication and no persistence** (documents live in an
+in-memory dict, keyed by session id). Anyone who can reach the host on 8765
+can use it and upload to it, and that port bypasses Traefik — so any auth
+middleware you add to the router does not cover it. Firewall the port, or
+switch the mapping to `127.0.0.1:8765:8765` and reach it over an SSH tunnel,
+if the server is on a public network.

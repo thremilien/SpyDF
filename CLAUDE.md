@@ -66,6 +66,12 @@ allowed a one-line comment instead of a docstring.
   `src/static/app.js`). `--page-w` is set from JS because a CSS percentage
   would resolve against a container that is itself sized by its pages once
   zoomed in.
+- A delete zone carries a colour (`color: [r, g, b]`, 0-255) and the export
+  paints both its cover and its redaction strips with it. The default is
+  sampled client-side from the rendered page along the zone's outline
+  (`contourColor` in `src/static/app.js`) — a white cover on coloured paper
+  advertises the redaction. Anything unusable falls back to white server-side,
+  so an older client keeps working.
 - A white box over a scan is the tool's worst case, not a redaction: it looks
   like an erasure on the left, so nothing prompts a zone, while the image keeps
   every pixel. `_covers()` in `src/probe.py` reports opaque fills lying inside

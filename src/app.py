@@ -43,6 +43,9 @@ from src.probe import STRUCT_TEXT_KEYS, inspect_document
 
 PACKAGE_DIR = Path(__file__).parent
 
+RGB_MAX = 255.0  # the client sends 0-255 channels, PyMuPDF wants 0-1
+WHITE = (1.0, 1.0, 1.0)
+
 # On some systems .js is guessed as application/javascript, which gets no
 # charset, and the JS accents then reach the UI broken.
 mimetypes.add_type("text/javascript", ".js")
@@ -417,6 +420,29 @@ def _recompress_images(doc):
         doc.rewrite_images(quality=RECOMPRESS_QUALITY, lossy=False, bitonal=False)
 
 
+def _zone_color(raw) -> tuple[float, float, float]:
+    """Read the colour a zone's cover is painted in, sent as three 0-255 channels.
+
+    On a coloured scan a white patch is itself a mark — it says where something
+    was. The client samples the paper along the drawn outline and sends that.
+
+    Args:
+        raw: The value received, of any type.
+
+    Returns:
+        The three channels as 0-1 floats; white for anything unusable, which is
+        what the cover was before it had a colour.
+    """
+    if not isinstance(raw, (list, tuple)) or len(raw) != 3:
+        return WHITE
+    out = []
+    for c in raw:
+        if isinstance(c, bool) or not isinstance(c, (int, float)):
+            return WHITE
+        out.append(min(RGB_MAX, max(0.0, float(c))) / RGB_MAX)
+    return (out[0], out[1], out[2])
+
+
 def _purge_annots(page, rects):
     """Delete every annotation and form field touching one of the rects.
 
@@ -701,7 +727,8 @@ def _verify(out: bytes, zones_by_page, page_map):
 async def api_export(request: Request, payload: dict):
     """Redact the session document and hold the result for download.
 
-    Zones arrive as {"3": [{"points": [[x, y], ...], "mode": "delete"}, ...]} in
+    Zones arrive as {"3": [{"points": [[x, y], ...], "mode": "delete",
+    "color": [r, g, b]}, ...]} in
     PDF coordinates, "points" being the outline of the zone (a rectangle is 4
     corners, but a polygon or freehand stroke works too). Everything follows that
     outline: redaction through the strips of `_zone_rects`, the white cover, and
@@ -751,6 +778,7 @@ async def api_export(request: Request, payload: dict):
                     "box": _is_box(points, rect),
                     "rects": _zone_rects(points, rect),
                     "mode": "pixelate" if z.get("mode") == "pixelate" else "delete",
+                    "color": _zone_color(z.get("color")),
                 }
             )
         if parsed:
@@ -798,20 +826,25 @@ async def api_export(request: Request, payload: dict):
         # running past the edge survived intact under the white cover.
         rects = [r for z in zs for r in z["rects"]]
         _purge_annots(page, rects)
-        for r in rects:
-            page.add_redact_annot(r)
+        # each strip is filled in its own zone's colour: the cover of step 3
+        # follows the outline exactly, the strips overshoot it a little, and a
+        # white sliver around a coloured cover would show on coloured paper.
+        for z in zs:
+            for r in z["rects"]:
+                page.add_redact_annot(r, fill=z["color"])
         page.apply_redactions(
             images=fitz.PDF_REDACT_IMAGE_PIXELS,
             graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED,
             text=fitz.PDF_REDACT_TEXT_REMOVE,
         )
 
-        # 3. "delete" zones: a white cover following the exact outline.
+        # 3. "delete" zones: a cover following the exact outline, in the zone's
+        # own colour — white unless the client sent one.
         if delete_zs:
             shape = page.new_shape()
             for z in delete_zs:
                 shape.draw_polyline(z["points"])
-                shape.finish(fill=(1, 1, 1), color=(1, 1, 1), closePath=True)
+                shape.finish(fill=z["color"], color=z["color"], closePath=True)
             shape.commit()
 
         # 4. "pixelate" zones: lay the mosaic back over the emptied area.

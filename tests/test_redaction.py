@@ -426,3 +426,58 @@ def test_filename_is_sanitised(client):
     assert r.status_code == 200
     name = r.json()["name"]
     assert "/" not in name and '"' not in name and "\r" not in name and "\n" not in name
+
+
+def colored_page() -> bytes:
+    """A page of coloured paper with a name on it."""
+    doc = fitz.open()
+    page = doc.new_page(width=300, height=300)
+    page.draw_rect(page.rect, color=None, fill=(0.9, 0.96, 0.78))
+    page.insert_text((60, 120), "SECRETNAMEALPHA", fontsize=14)
+    out = doc.tobytes()
+    doc.close()
+    return out
+
+
+def cover_pixel(data: bytes, point=(150, 110)) -> tuple:
+    """The colour of the exported page where the zone was."""
+    doc = fitz.open(stream=data, filetype="pdf")
+    pm = doc[0].get_pixmap(dpi=72)
+    px = pm.pixel(*point)
+    doc.close()
+    return px
+
+
+def export_zone(client, data: bytes, color=None) -> bytes:
+    zone = {"type": "rect", "points": rect_points((40, 100, 260, 130))}
+    if color is not None:
+        zone["color"] = color
+    sid = open_doc(client, data)
+    r = client.post(
+        "/api/export",
+        json={"sid": sid, "zones": {"0": [zone]}, "strip_meta": True, "deleted_pages": []},
+    )
+    assert r.status_code == 200, r.text
+    return client.get(r.json()["download"]).content
+
+
+def test_zone_cover_takes_the_colour_it_is_given(client):
+    """A white patch on coloured paper says "something was here": the cover is
+    painted in the colour the client sampled from the page."""
+    out = export_zone(client, colored_page(), color=[229, 244, 198])
+    assert cover_pixel(out) == (229, 244, 198)
+    assert b"SECRETNAMEALPHA" not in every_byte(out)
+
+
+def test_zone_cover_stays_white_without_a_colour(client):
+    """Older clients, and anything unusable, keep the original behaviour."""
+    data = colored_page()
+    assert cover_pixel(export_zone(client, data)) == (255, 255, 255)
+    assert cover_pixel(export_zone(client, data, color="green")) == (255, 255, 255)
+    assert cover_pixel(export_zone(client, data, color=[1, 2])) == (255, 255, 255)
+
+
+def test_zone_colour_channels_are_clamped(client):
+    """Out-of-range channels must not raise, nor wrap around."""
+    out = export_zone(client, colored_page(), color=[-40, 300, 128])
+    assert cover_pixel(out) == (0, 255, 128)

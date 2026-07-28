@@ -61,6 +61,17 @@ Each zone has a mode, switched from its right-click menu:
 - **Pixelate** — the area is replaced by a genuine downsample of itself,
   an unreadable mosaic; the source objects are removed just the same.
 
+The cover of a **delete** zone is painted in the colour of the paper it was
+drawn on: the average of the pixels its outline passes over — the outline, not
+the inside, which is the content about to go. On a coloured or greyish scan a
+white patch is itself a mark, it says where something was; matching the paper
+leaves nothing to notice. The zone's right-click menu holds that colour as
+three **RGB** numbers and a **pipette** that takes a colour from a click
+anywhere on the page. The pipette reads the rendered page, not the screen, so
+clicking on a zone samples the paper underneath rather than the cover on top.
+The redaction strips are filled in the same colour, so no white sliver shows
+around a non-rectangular zone.
+
 The closing double-click of the polygon is taken before the browser gets it: it
 would otherwise start a word selection on the nearest text — which a
 translation or dictionary extension then picks up on a word you never meant to

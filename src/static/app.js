@@ -461,6 +461,8 @@ function renderZones(i) {
     const poly = document.createElementNS(svg.namespaceURI, 'polygon');
     poly.setAttribute('points', z.points.map(p => p.join(',')).join(' '));
     poly.setAttribute('class', `zone zone-${z.mode}` + (isSel ? ' selected' : ''));
+    // a delete zone shows the cover it will paint; a pixelate one keeps its mosaic
+    if (z.mode !== 'pixelate') poly.style.fill = rgbCss(zoneColor(z));
     poly.dataset.idx = idx;
     if (!locked) {
       poly.setAttribute('tabindex', '0');
@@ -568,6 +570,8 @@ function renderHandles(svg, i, idx, z) {
 // ---------- editing: move / resize ----------
 function beginZoneDrag(ev, i, idx) {
   if (!ev.isPrimary || ev.button !== 0) return;
+  // the pipette reads the page under the zone, so a click on one still samples
+  if (picking) { ev.preventDefault(); ev.stopPropagation(); pickAt(i, pageEls[i].svg, ev); return; }
   ev.stopPropagation();
   keyboardNav = false;
   selected = { page: i, index: idx };
@@ -653,6 +657,7 @@ function dropSelection() {
 function wireLayer(i, svg) {
   svg.addEventListener('pointerdown', e => {
     if (!e.isPrimary || e.button !== 0) return;
+    if (picking) { e.preventDefault(); e.stopPropagation(); pickAt(i, svg, e); return; }
     if (deletedPages.has(i)) return;
     activePage = i;
     if (selected) { selected = null; closeMenu(); renderZones(i); }
@@ -679,7 +684,81 @@ function wireLayer(i, svg) {
   });
 }
 
+// ---------- the cover colour ----------
+// A white cover on a coloured scan is itself a mark: it says "something was
+// here". The default is read from the paper the outline was drawn over — the
+// pixels the stroke passes over, not the ones inside it, which are the content
+// about to disappear.
+const CONTOUR_SAMPLES = 96;
+const WHITE_RGB = [255, 255, 255];
+let pageCanvas = { src: null, ctx: null, w: 0, h: 0 };
+
+function rgbCss(c) { return `rgb(${c[0]}, ${c[1]}, ${c[2]})`; }
+function zoneColor(z) { return z.color || WHITE_RGB; }
+
+// The rendered page, on a canvas we can read. Same origin, so no tainting.
+function pageContext(i) {
+  const pe = pageEls[i];
+  if (!pe || !pe.img.complete || !pe.img.naturalWidth) return null;
+  if (pageCanvas.src !== pe.img.src) {
+    const cv = document.createElement('canvas');
+    cv.width = pe.img.naturalWidth;
+    cv.height = pe.img.naturalHeight;
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    try { ctx.drawImage(pe.img, 0, 0); } catch { return null; }
+    pageCanvas = { src: pe.img.src, ctx, w: cv.width, h: cv.height };
+  }
+  return pageCanvas;
+}
+
+// PDF point -> pixel of the rendered page
+function toPixel(i, x, y, cv) {
+  const p = pages[i];
+  return [
+    Math.min(cv.w - 1, Math.max(0, Math.round((x - p.x0) / p.w * cv.w))),
+    Math.min(cv.h - 1, Math.max(0, Math.round((y - p.y0) / p.h * cv.h))),
+  ];
+}
+
+function pixelAt(i, x, y) {
+  const cv = pageContext(i);
+  if (!cv) return null;
+  const [px, py] = toPixel(i, x, y, cv);
+  try {
+    const d = cv.ctx.getImageData(px, py, 1, 1).data;
+    return [d[0], d[1], d[2]];
+  } catch { return null; }
+}
+
+// Walks the outline at a constant step and averages what it crosses.
+function contourColor(i, points) {
+  const cv = pageContext(i);
+  if (!cv || points.length < 2) return WHITE_RGB;
+  const edges = [];
+  let total = 0;
+  for (let k = 0; k < points.length; k++) {
+    const a = points[k], b = points[(k + 1) % points.length];
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    edges.push([a, b, len]);
+    total += len;
+  }
+  if (!total) return WHITE_RGB;
+  let r = 0, g = 0, bl = 0, n = 0;
+  for (const [a, b, len] of edges) {
+    const steps = Math.max(1, Math.round(CONTOUR_SAMPLES * len / total));
+    for (let s = 0; s < steps; s++) {
+      const t = s / steps;
+      const px = pixelAt(i, a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t);
+      if (!px) continue;
+      r += px[0]; g += px[1]; bl += px[2]; n++;
+    }
+  }
+  if (!n) return WHITE_RGB;
+  return [Math.round(r / n), Math.round(g / n), Math.round(bl / n)];
+}
+
 function addZone(i, zone) {
+  if (!zone.color) zone.color = contourColor(i, zone.points);
   pushHistory();
   (zones[i] = zones[i] || []).push(zone);
   activePage = i;
@@ -765,6 +844,7 @@ function cancelPending() {
 
 // ---------- context menu ----------
 function showMenu(x, y, z, focusFirst) {
+  syncColorFields(z);
   $('zoneModeDelete').classList.toggle('active', z.mode === 'delete');
   $('zoneModeDelete').setAttribute('aria-checked', z.mode === 'delete');
   $('zoneModePixelate').classList.toggle('active', z.mode === 'pixelate');
@@ -784,7 +864,83 @@ function openMenuOnZone(z) {
   showMenu(r.left, r.bottom + 4, z, true);
 }
 
-function menuItems() { return [...menu.querySelectorAll('.zm-item')]; }
+function menuItems() { return [...menu.querySelectorAll('.zm-item, .zm-num')]; }
+
+// ---------- the colour of the selected zone ----------
+const RGB_FIELDS = ['zoneR', 'zoneG', 'zoneB'];
+
+function syncColorFields(z) {
+  const c = zoneColor(z);
+  RGB_FIELDS.forEach((id, k) => { $(id).value = c[k]; });
+  $('zoneSwatch').style.background = rgbCss(c);
+  const pixelate = z.mode === 'pixelate';
+  $('zoneColorRow').classList.toggle('is-off', pixelate);
+  $('zoneColorRow').title = pixelate
+    ? 'A pixelated zone is covered by its own mosaic, not by a colour.'
+    : 'Colour of the cover painted over this zone.';
+}
+
+// One history entry per editing burst: typing three channels, or dragging
+// through the pipette, is one change to undo.
+let colorHistory = null;
+function beginColorEdit() {
+  if (!colorHistory) colorHistory = onceHistory();
+  colorHistory();
+}
+function endColorEdit() { colorHistory = null; }
+
+function setSelectedColor(c) {
+  if (!selected) return;
+  beginColorEdit();
+  const z = zones[selected.page][selected.index];
+  z.color = c;
+  syncColorFields(z);
+  renderZones(selected.page);
+  updateStatus();
+}
+
+function readColorFields() {
+  return RGB_FIELDS.map(id => {
+    const v = Math.round(Number($(id).value));
+    return Number.isFinite(v) ? Math.min(255, Math.max(0, v)) : 0;
+  });
+}
+
+RGB_FIELDS.forEach(id => {
+  $(id).addEventListener('input', () => setSelectedColor(readColorFields()));
+  $(id).addEventListener('change', () => { setSelectedColor(readColorFields()); endColorEdit(); });
+  // the menu closes on Escape/Tab; a number field must keep its own keys
+  $(id).addEventListener('keydown', e => e.stopPropagation());
+});
+
+// ---------- pipette ----------
+// Reads the rendered page, not the screen: clicking over a zone still samples
+// the paper underneath rather than the cover drawn on top.
+let picking = false;
+
+function setPicking(on) {
+  picking = on;
+  document.body.classList.toggle('picking', on);
+  $('zonePick').classList.toggle('active', on);
+  $('zonePick').setAttribute('aria-pressed', on);
+  if (on) setStatus('Pipette: click the page to take its colour (Esc to cancel).');
+  else updateStatus();
+}
+
+function pickAt(i, svg, e) {
+  const [x, y] = toSvgPoint(svg, e.clientX, e.clientY);
+  const c = pixelAt(i, x, y);
+  setPicking(false);
+  if (!c) { setStatus('This page is not rendered yet: no colour to take.', 'warn'); return; }
+  setSelectedColor(c);
+  endColorEdit();
+}
+
+$('zonePick').onclick = () => {
+  if (!selected) return;
+  setPicking(!picking);
+  closeMenu();
+};
 
 function closeMenu(refocus) {
   if (menu.hidden) return;
@@ -1087,7 +1243,10 @@ window.addEventListener('keydown', e => {
   const idle = !document.activeElement || document.activeElement === document.body;
   if (e.code === 'Space' && idle) { e.preventDefault(); setPanReady(true); return; }
   if (idle && menu.hidden && panKey(e)) { e.preventDefault(); return; }
-  if (e.key === 'Escape') { cancelPending(); selected = null; closeMenu(); renderAll(); }
+  if (e.key === 'Escape') {
+    if (picking) { setPicking(false); return; }
+    cancelPending(); selected = null; closeMenu(); renderAll();
+  }
   if (e.key === 'Enter' && pending) finishPolygon();
   if (e.key === 'ContextMenu' && selected && menu.hidden) {
     e.preventDefault();

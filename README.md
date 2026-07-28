@@ -107,6 +107,22 @@ responses, optional-content layer names, and the text a tagged PDF carries
 outside its pages (`/Alt`, `/ActualText`, `/E`). Annotations and form fields
 intersecting a zone are deleted explicitly.
 
+It also empties the images themselves. A copy photographed with a phone, or
+scanned by a device that fills its fields, arrives with **Exif** inside the
+image stream: make, model, body serial number, the date, sometimes a GPS fix —
+and a **thumbnail**, which is a complete copy of the picture in miniature. That
+last one matters: redaction blanks pixels in the main image and does not touch
+the thumbnail, so an otherwise perfect export can ship a small picture of the
+page *before* anything was drawn over it. Redaction only rewrites the images a
+zone touches, and nothing else in a PDF toolchain looks inside an image stream,
+so this is the only step that reaches any of it.
+
+The removal is a cut between the JPEG's marker segments: the pixels are never
+decoded and re-encoded, so the image loses no quality. What describes how the
+pixels are to be read — the JFIF density, the ICC colour profile, Adobe's colour
+transform — is kept, since dropping it would change how the image looks rather
+than who it identifies.
+
 ### The inspector pane
 
 Opening a PDF in a reader only shows you a picture of it. The right-hand pane
@@ -131,6 +147,11 @@ column on the far left. Between them, the pane accounts for:
   carries the original: any OCR, "extract images" or object-delete gets it
   back. The pane outlines those areas in red and counts them as *still there*
   until a zone covers one — a zone does destroy the pixels underneath;
+- **image metadata** — the Exif, XMP, IPTC and comments an image carries in its
+  own stream, one row per field: camera, serial number, date, GPS, thumbnail.
+  It is listed in the column rather than on the page because that is where it
+  lives: no zone reaches into an image stream, only the scrubbing does, and the
+  pane marks these on the checkbox alone rather than on the zones you drew;
 - **text carried outside the pages** — a tagged PDF describes a figure in
   `/Alt`, stores the characters behind a glyph run in `/ActualText` and an
   abbreviation's expansion in `/E`. Readers show and copy it, indexers index
@@ -183,7 +204,9 @@ uv run ruff format .   # format
 
 The tests build a PDF carrying one of each class of identifying trace, export
 it through the real routes, and assert none survives in the raw bytes or in
-any decompressed stream of the result.
+any decompressed stream of the result. One of them builds an Exif block by hand
+— camera, serial, GPS, thumbnail — and checks both that the export removes it
+and that the image still decodes, pixel for pixel, afterwards.
 
 ## Project layout
 
@@ -192,6 +215,7 @@ any decompressed stream of the result.
 - `src/config.py` — every tunable, read from the environment and `.env`
 - `src/logs.py` — the audit log (connection, import, export)
 - `src/probe.py` — read-only extraction of the document's invisible payload
+- `src/imagemeta.py` — the metadata carried inside an image, read and removed
 - `src/server.py` — server bootstrap (opens browser, runs uvicorn)
 - `src/templates/index.html` — page shell
 - `src/static/app.js` — pages, zones, export

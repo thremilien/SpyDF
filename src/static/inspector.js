@@ -123,6 +123,12 @@ function statusOf(it) {
     case 'annot':
     case 'image':
       return hit ? GONE : KEPT;
+    case 'imagemeta':
+      // Exif lives in the image's own stream, not on the page. Redacting over
+      // the image does rewrite that stream, but only the scrubbing is promised
+      // to reach it: claiming an erasure a zone might not deliver is the one
+      // mistake this pane must not make.
+      return stripMeta() ? GONE : KEPT;
     case 'cover':
       // the white box hides the pixels, it does not remove them: only a zone
       // over it destroys what is underneath
@@ -195,6 +201,18 @@ const COVER_ZONE_MARGIN = 1;   // pt, so nothing peeks out from under the edge
 const COVER_TIP = 'Click to redact this area for real: it becomes a zone on the '
   + 'left, movable and undoable like any other.';
 
+// The same image can be placed several times on a page; what it carries belongs
+// to the image, so it is listed once however often it is drawn.
+function imageTraces(p) {
+  const seen = new Set(), out = [];
+  (p.images || []).forEach(im => {
+    if (!(im.meta || []).length || seen.has(im.name)) return;
+    seen.add(im.name);
+    im.meta.forEach(m => out.push({ ...m, name: im.name }));
+  });
+  return out;
+}
+
 function colorName(rgb) {
   if (!rgb || rgb.length < 3) return 'opaque';
   if (rgb.every(c => c > 0.95)) return 'white';
@@ -263,6 +281,21 @@ function buildRail(d, pagesData) {
       makeCoverAction(r, c);
     });
   } else emptyNote(cov, 'None.');
+
+  // Inside the image, not on the page: a scan photographed with a phone carries
+  // the camera, its serial number, the date, sometimes a GPS fix — and a
+  // thumbnail, which is a small copy of the picture before anything was drawn
+  // over it. No zone reaches into an image stream, only the scrubbing does.
+  const imgMeta = pagesData.flatMap(p => imageTraces(p).map(m => ({ ...m, n: p.n })));
+  const imd = section(insRail, 'Image metadata', imgMeta.length);
+  if (imgMeta.length) {
+    imgMeta.forEach(m => {
+      const r = row(imd, `p. ${m.n + 1} ${m.field}`, m.value,
+        { rule: 'imagemeta', page: m.n, notable: true });
+      r.title = `${m.kind} carried inside ${m.name}, not drawn on the page: `
+        + 'removed by the scrubbing, not by a zone.';
+    });
+  } else emptyNote(imd, 'None.');
 
   // Attached to a page, but nowhere on it: it lives in the structure tree, so
   // it is listed here rather than drawn on the ghost. A scanned page whose only
@@ -401,7 +434,9 @@ function buildGhost(p) {
   });
   p.images.forEach(i => {
     if (!i.rect) return;
-    const g = boxNode(i.rect, 'ig-image', `Image ${i.name} — ${i.w} × ${i.h} px`);
+    const carried = (i.meta || []).map(m => `${m.field}: ${m.value}`).join(' · ');
+    const g = boxNode(i.rect, 'ig-image', `Image ${i.name} — ${i.w} × ${i.h} px`
+      + (carried ? ` — carries ${carried}` : ''));
     svg.append(g);
     addItem({ rule: 'image', page: p.n, rect: i.rect, el: g, chip: null, notable: false });
   });
@@ -421,6 +456,7 @@ function buildGhost(p) {
   cont.append(svg, tab);
   const struct = p.struct || [];
   const covers = p.covers || [];
+  const traces = imageTraces(p);
   if (!spanCount) {
     // "only an image" was said even when the file described the page in its
     // structure tree — text no zone can reach, and the only one such a page has.
@@ -437,6 +473,7 @@ function buildGhost(p) {
     p.widgets.length && `${p.widgets.length} field(s)`,
     p.links.length && `${p.links.length} link(s)`,
     p.images.length && `${p.images.length} image(s)`,
+    traces.length && `${traces.length} image metadata item(s)`,
     p.drawings && `${p.drawings} drawing(s)`,
   ].filter(Boolean);
   cont.append(el('div', 'ins-page-counts', counts.join(' · ') || 'Empty page'));

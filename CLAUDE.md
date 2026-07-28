@@ -39,6 +39,7 @@ allowed a one-line comment instead of a docstring.
 - `src/config.py` — every tunable, read from the environment and from `.env`;
   `.env.example` is the committed reference, `.env` itself is ignored
 - `src/templates/index.html` + `src/static/` — the UI (served directly, no templating engine)
+- `src/imagemeta.py` — the metadata inside an image stream, read and stripped
 - `src/logs.py` — the `"spydf"` logger: stderr always, optional rotating
   file; `log_event()` is the only thing that should write to it
 
@@ -78,6 +79,24 @@ allowed a one-line comment instead of a docstring.
   an image, and the inspector marks them "still there" until a zone reaches
   them. The rectangle containing the whole image is the page background — it
   must stay excluded, or every scan cries wolf.
+- An image carries metadata of its own, inside its stream: Exif (camera, serial,
+  date, GPS, and a *thumbnail* that is a small copy of the picture before
+  anything was drawn on it), XMP, IPTC, JPEG comments. Redaction rewrites only
+  the images a zone touches, and neither `scrub()` nor `rewrite_images()` looks
+  inside a stream — so `src/imagemeta.py` is the only thing that reaches it.
+  Reading (`image_traces`, for the inspector) and stripping
+  (`strip_image_metadata`, called from `_scrub_document`) live in that one
+  module for the same reason `STRUCT_TEXT_KEYS` is shared: they must not drift.
+  Two things there are load-bearing — the strip is a byte-level cut between JPEG
+  marker segments, so the pixels are never re-encoded, and APP0/APP2-ICC/APP14
+  are *kept*, because they say how the pixels are to be decoded (drop APP14 and a
+  CMYK scan inverts). `_recompress_images` therefore runs *before*
+  `_scrub_document`: re-encoding writes fresh image streams, and the strip has to
+  be the last thing to see them.
+- The inspector marks image metadata erased or kept from the scrubbing checkbox
+  alone, never from a zone. Redacting over an image does rewrite its stream, but
+  promising an erasure a zone might not deliver is the one mistake this pane
+  must not make.
 - Not everything a page carries is drawn on it: `/Alt`, `/ActualText` and `/E`
   hang off the structure tree, so redaction cannot reach them and only the
   scrubbing removes them. `src/probe.py` reads those keys and `src/app.py`

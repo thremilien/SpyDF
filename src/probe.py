@@ -2,6 +2,8 @@
 
 import fitz
 
+from src.imagemeta import image_traces
+
 MAX_SPANS = 30_000  # guard rail on a very long document
 SNIPPET = 2000  # a whole script is never returned
 
@@ -305,7 +307,17 @@ def _links(page) -> list[dict]:
     return out
 
 
-def _images(page) -> list[dict]:
+def _images(page, traces: dict) -> list[dict]:
+    """List the images drawn on a page, with what each one carries besides pixels.
+
+    Args:
+        page: The page to read.
+        traces: xref -> its metadata, filled as images are met. An image used on
+            several pages is read once, and a scan's stream is not small.
+
+    Returns:
+        One entry per placement of an image on the page.
+    """
     out = []
     try:
         imgs = page.get_images(full=True)
@@ -317,6 +329,8 @@ def _images(page) -> list[dict]:
             rects = page.get_image_rects(xref)
         except Exception:
             rects = []
+        if xref not in traces:
+            traces[xref] = image_traces(page.parent, xref)
         for rect in rects or [None]:
             out.append(
                 {
@@ -324,6 +338,7 @@ def _images(page) -> list[dict]:
                     "h": im[3],
                     "name": im[7] or f"image {xref}",
                     "rect": _r(rect) if rect is not None else None,
+                    "meta": traces[xref],
                 }
             )
     return out
@@ -405,12 +420,13 @@ def inspect_document(data: bytes) -> dict:
         }
         structs = _struct_text(doc)
         pages = []
+        traces: dict[int, list[dict]] = {}
         for n, page in enumerate(doc):
             try:
                 drawings = len(page.get_drawings())
             except Exception:
                 drawings = 0
-            images = _images(page)
+            images = _images(page, traces)
             image_rects = [fitz.Rect(im["rect"]) for im in images if im["rect"]]
             pages.append(
                 {

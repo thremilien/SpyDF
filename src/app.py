@@ -38,6 +38,7 @@ from src.config import (
     WATERMARK_MIN_SIZE,
     env_flag,
 )
+from src.imagemeta import strip_image_metadata
 from src.logs import log_event
 from src.probe import STRUCT_TEXT_KEYS, inspect_document
 
@@ -488,9 +489,10 @@ def _scrub_document(doc):
     """Strip the identifying traces that do not live in the page content.
 
     Redaction leaves these untouched: metadata, XMP, bookmarks (often the
-    student's name), attachments, JavaScript, links, form answers and the text
-    the structure tree carries for a page. Each step
-    is best-effort; one unsupported by the file must not fail the export.
+    student's name), attachments, JavaScript, links, form answers, the text
+    the structure tree carries for a page, and the Exif an image carries inside
+    its own stream. Each step is best-effort; one unsupported by the file must
+    not fail the export.
 
     Args:
         doc: The document to scrub, in place.
@@ -501,6 +503,7 @@ def _scrub_document(doc):
         lambda: doc.set_toc([]),
         lambda: _rename_layers(doc),
         lambda: _strip_struct_text(doc),
+        lambda: strip_image_metadata(doc),
         lambda: doc.scrub(redactions=False, clean_pages=False),
     ):
         with contextlib.suppress(Exception):
@@ -871,13 +874,16 @@ async def api_export(request: Request, payload: dict):
     if deleted_pages:
         doc.delete_pages(sorted(deleted_pages))
 
-    if strip_meta:
-        _scrub_document(doc)
-
     # only pages carrying a zone were rewritten, so there is nothing to
     # recompress otherwise — and nothing to lose a generation over.
+    #
+    # Before the scrubbing, not after: re-encoding writes fresh image streams,
+    # and those are exactly what strip_image_metadata has to be the last to see.
     if zones_by_page:
         _recompress_images(doc)
+
+    if strip_meta:
+        _scrub_document(doc)
 
     # garbage=4 + clean: objects left orphaned (old images, replaced content
     # streams) are really removed from the file, not merely dereferenced as an

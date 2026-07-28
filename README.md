@@ -43,6 +43,27 @@ bookmarks (often the student's name), attachments, JavaScript, links, form
 responses and optional-content layer names. Annotations and form fields
 intersecting a zone are deleted explicitly.
 
+### The inspector pane
+
+Opening a PDF in a reader only shows you a picture of it. The right-hand pane
+writes out, in plain text, what the file actually carries:
+
+- the **indexed text layer** — what is selectable, copyable and searchable,
+  including any **invisible text** (an OCR layer under a scan, or text hidden
+  on purpose), which is highlighted because it leaks while showing nothing;
+- **metadata** and **XMP** — author, title, keywords, and the scanner or
+  application that produced the file;
+- **bookmarks**, often literally "Copie de <student name>";
+- **annotations** with their author, **form fields** with their values,
+  **attachments**, **layers**, **links**, **fonts** and any **JavaScript**.
+
+Every item is marked *effacé* or *conservé* according to the zones you have
+drawn and the scrubbing checkbox, with a count of what would still leak, so
+you can see the result before exporting. The pane is read-only.
+
+Three views from the toolbar: document only, both (default), hidden content
+only.
+
 ### Verification
 
 After writing the file, the exporter re-opens **the exported bytes** and looks
@@ -72,10 +93,13 @@ any decompressed stream of the result.
 ## Project layout
 
 - `main.py` — entry point
-- `src/app.py` — FastAPI routes (open/render/export/download)
+- `src/app.py` — FastAPI routes (open/render/inspect/export/download)
+- `src/probe.py` — read-only extraction of the document's invisible payload
 - `src/server.py` — server bootstrap (opens browser, runs uvicorn)
 - `src/templates/index.html` — page shell
-- `src/static/` — CSS and client-side JS
+- `src/static/app.js` — pages, zones, export
+- `src/static/inspector.js` — the inspector pane
+- `tests/` — regression tests
 
 ## Docker
 

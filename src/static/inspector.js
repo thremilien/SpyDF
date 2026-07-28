@@ -117,6 +117,8 @@ function statusOf(it) {
     case 'layer':
       return stripMeta() ? { cls: 'gone', label: 'renamed' } : KEPT;
     case 'link':
+    case 'struct':
+      // not page content: no zone can reach it, only the scrubbing can
       return (dead || stripMeta()) ? GONE : KEPT;
     case 'annot':
     case 'image':
@@ -181,7 +183,7 @@ function emptyNote(parent, text) {
 }
 
 // ---------- the column: what has no position on any page ----------
-function buildRail(d) {
+function buildRail(d, pagesData) {
   insRail.textContent = '';
 
   const summary = el('div', 'ins-summary');
@@ -204,6 +206,18 @@ function buildRail(d) {
     row(xmp, 'XMP block', d.xmp.slice(0, 400) + (d.xmp.length > 400 ? '…' : ''),
       { rule: 'meta', page: null, notable: true });
   } else emptyNote(xmp, 'None.');
+
+  // Attached to a page, but nowhere on it: it lives in the structure tree, so
+  // it is listed here rather than drawn on the ghost. A scanned page whose only
+  // text is this one reads as "no text" everywhere else.
+  const struct = pagesData.flatMap(p => (p.struct || []).map(e => ({ ...e, n: p.n })));
+  const stx = section(insRail, 'Text outside the pages', struct.length);
+  if (struct.length) {
+    struct.forEach(e => {
+      const r = row(stx, `p. ${e.n + 1}`, e.text, { rule: 'struct', page: e.n, notable: true });
+      r.title = `${e.kind}, read by readers and indexers but drawn nowhere on the page`;
+    });
+  } else emptyNote(stx, 'None.');
 
   const toc = section(insRail, 'Bookmarks', d.toc.length);
   if (d.toc.length) {
@@ -335,12 +349,18 @@ function buildGhost(p) {
   });
 
   cont.append(svg, tab);
+  const struct = p.struct || [];
   if (!spanCount) {
-    cont.append(el('div', 'ins-page-note',
-      'No text: this page is only an image, nothing on it is selectable or indexable.'));
+    // "only an image" was said even when the file described the page in its
+    // structure tree — text no zone can reach, and the only one such a page has.
+    cont.append(el('div', 'ins-page-note', struct.length
+      ? 'No text on the page itself: it is only an image. But the file carries '
+        + 'text for it outside the page, listed in the left-hand column.'
+      : 'No text: this page is only an image, nothing on it is selectable or indexable.'));
   }
   const counts = [
     spanCount && `${spanCount} text fragment(s)`,
+    struct.length && `${struct.length} text item(s) outside the page`,
     p.annots.length && `${p.annots.length} annotation(s)`,
     p.widgets.length && `${p.widgets.length} field(s)`,
     p.links.length && `${p.links.length} link(s)`,
@@ -374,7 +394,7 @@ function build(d) {
   dirty.clear();
   insPages.textContent = '';
 
-  buildRail(d.doc);
+  buildRail(d.doc, d.pages);
   d.pages.forEach(p => insPages.append(buildGhost(p)));
 
   if (d.truncated) {

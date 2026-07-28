@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from src.app import app
 from src.probe import inspect_document
-from tests.test_redaction import build_pdf, open_doc
+from tests.test_redaction import build_pdf, open_doc, rect_points
 
 
 @pytest.fixture
@@ -126,3 +126,78 @@ def test_inspect_survives_a_bare_document(client):
     assert d["doc"]["toc"] == [] and d["doc"]["attachments"] == []
     assert d["pages"][0]["blocks"] == []
     assert d["truncated"] is False
+
+
+def build_tagged_scan() -> bytes:
+    """A scanned page whose only text hangs off the structure tree.
+
+    That is the shape a graded-exam export takes: an image of the copy, and an
+    /Alt describing it. No zone can reach that text — it is not page content —
+    so the pane has to name it and the scrubbing has to remove it.
+    """
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.draw_rect(fitz.Rect(50, 50, 545, 792), color=(0, 0, 0))
+
+    elem = doc.get_new_xref()
+    doc.update_object(
+        elem,
+        "<</Type/StructElem/S/Figure/Alt(STRUCTALTOMICRON)"
+        f"/ActualText(STRUCTACTUALPI)/K[0]/Pg {page.xref} 0 R>>",
+    )
+    root = doc.get_new_xref()
+    doc.update_object(root, f"<</Type/StructTreeRoot/K[{elem} 0 R]>>")
+    doc.xref_set_key(doc.pdf_catalog(), "StructTreeRoot", f"{root} 0 R")
+
+    out = doc.tobytes()
+    doc.close()
+    return out
+
+
+def test_inspect_reports_text_carried_by_the_structure_tree():
+    """A page can read as "no text" and still carry some: the pane must say so."""
+    page = inspect_document(build_tagged_scan())["pages"][0]
+    assert page["blocks"] == []  # nothing in the page content
+    assert [e["text"] for e in page["struct"]] == ["STRUCTALTOMICRON", "STRUCTACTUALPI"]
+    assert [e["kind"] for e in page["struct"]] == ["alternative text", "actual text"]
+
+
+def test_structure_tree_text_is_scrubbed_on_export(client):
+    """It survives redaction by construction, so only the scrubbing can take it
+    out — and it used to survive that too."""
+    data = build_tagged_scan()
+    sid = open_doc(client, data)
+    r = client.post(
+        "/api/export",
+        json={
+            "sid": sid,
+            "zones": {"0": [{"type": "rect", "points": rect_points((10, 10, 30, 30))}]},
+            "strip_meta": True,
+            "deleted_pages": [],
+        },
+    )
+    assert r.status_code == 200, r.text
+    out = client.get(r.json()["download"]).content
+    assert b"STRUCTALTOMICRON" not in out
+    assert b"STRUCTACTUALPI" not in out
+    assert not inspect_document(out)["pages"][0]["struct"]
+
+
+def test_structure_tree_text_is_kept_without_the_checkbox(client):
+    """Unchecked, the box promises nothing is stripped: it must not lie either."""
+    sid = open_doc(client, build_tagged_scan())
+    r = client.post(
+        "/api/export",
+        json={
+            "sid": sid,
+            "zones": {"0": [{"type": "rect", "points": rect_points((10, 10, 30, 30))}]},
+            "strip_meta": False,
+            "deleted_pages": [],
+        },
+    )
+    assert r.status_code == 200, r.text
+    out = client.get(r.json()["download"]).content
+    assert [e["text"] for e in inspect_document(out)["pages"][0]["struct"]] == [
+        "STRUCTALTOMICRON",
+        "STRUCTACTUALPI",
+    ]

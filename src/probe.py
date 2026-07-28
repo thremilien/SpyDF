@@ -18,6 +18,15 @@ META_LABELS = [
     ("encryption", "Encryption"),
 ]
 
+# Text a tagged PDF carries in its structure tree instead of in the page: the
+# description of a figure, the real characters behind a glyph run, an
+# abbreviation's expansion. Shared with app.py, which strips these same keys.
+STRUCT_TEXT_KEYS = [
+    ("Alt", "alternative text"),
+    ("ActualText", "actual text"),
+    ("E", "expansion"),
+]
+
 LINK_KINDS = {
     fitz.LINK_GOTO: "page",
     fitz.LINK_URI: "url",
@@ -139,6 +148,45 @@ def _fonts(doc) -> list[dict]:
                 continue
             seen.add(basefont)
             out.append({"name": basefont, "type": ftype, "embedded": ext != "n/a"})
+    return out
+
+
+def _struct_text(doc) -> dict[int, list[dict]]:
+    """Collect the text the structure tree carries for each page.
+
+    Readers show it, copy it and read it out, indexers index it — and redaction
+    never reaches it, because it is not page content: it hangs off the
+    structure tree. On a scanned page it is often the only text there is, which
+    is exactly when the page looks empty of text and is not.
+
+    PyMuPDF exposes no API for the structure tree, so the objects are walked by
+    hand, as for the JavaScript.
+
+    Args:
+        doc: An open document.
+
+    Returns:
+        Page number -> its entries, each {"kind", "text"}.
+    """
+    try:
+        page_of = {page.xref: page.number for page in doc}
+    except Exception:
+        return {}
+    out: dict[int, list[dict]] = {}
+    for xref in range(1, doc.xref_length()):
+        try:
+            if doc.xref_get_key(xref, "Type")[1] != "/StructElem":
+                continue
+            kind, val = doc.xref_get_key(xref, "Pg")
+            n = page_of.get(int(val.split()[0])) if kind == "xref" else None
+            if n is None:
+                continue
+            for key, label in STRUCT_TEXT_KEYS:
+                k, text = doc.xref_get_key(xref, key)
+                if k == "string" and text.strip():
+                    out.setdefault(n, []).append({"kind": label, "text": text[:SNIPPET]})
+        except Exception:
+            continue
     return out
 
 
@@ -299,6 +347,7 @@ def inspect_document(data: bytes) -> dict:
             "javascript": _javascript(doc),
             "fonts": _fonts(doc),
         }
+        structs = _struct_text(doc)
         pages = []
         for n, page in enumerate(doc):
             try:
@@ -313,6 +362,7 @@ def inspect_document(data: bytes) -> dict:
                     "widgets": _widgets(page),
                     "links": _links(page),
                     "images": _images(page),
+                    "struct": structs.get(n, []),
                     "drawings": drawings,
                 }
             )

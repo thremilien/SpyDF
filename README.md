@@ -92,7 +92,8 @@ zooming in gives you more detail rather than a bigger blur.
 "Strip document traces" (on by default) also clears what redaction
 leaves untouched because it does not live in the page content: metadata, XMP,
 bookmarks (often the student's name), attachments, JavaScript, links, form
-responses and optional-content layer names. Annotations and form fields
+responses, optional-content layer names, and the text a tagged PDF carries
+outside its pages (`/Alt`, `/ActualText`, `/E`). Annotations and form fields
 intersecting a zone are deleted explicitly.
 
 ### The inspector pane
@@ -113,6 +114,12 @@ column on the far left. Between them, the pane accounts for:
 - **metadata** and **XMP** — author, title, keywords, and the scanner or
   application that produced the file;
 - **bookmarks**, often literally "Copie de <student name>";
+- **text carried outside the pages** — a tagged PDF describes a figure in
+  `/Alt`, stores the characters behind a glyph run in `/ActualText` and an
+  abbreviation's expansion in `/E`. Readers show and copy it, indexers index
+  it, and no zone can reach it: it is not page content. On a scan it is
+  regularly the only text a page has, so a page that reads as "image only"
+  everywhere else is not necessarily silent;
 - **annotations** with their author, **form fields** with their values,
   **attachments**, **layers**, **links**, **fonts** and any **JavaScript**.
 

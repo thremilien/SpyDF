@@ -66,6 +66,12 @@ allowed a one-line comment instead of a docstring.
   `src/static/app.js`). `--page-w` is set from JS because a CSS percentage
   would resolve against a container that is itself sized by its pages once
   zoomed in.
+- Not everything a page carries is drawn on it: `/Alt`, `/ActualText` and `/E`
+  hang off the structure tree, so redaction cannot reach them and only the
+  scrubbing removes them. `src/probe.py` reads those keys and `src/app.py`
+  strips them, from the one shared `STRUCT_TEXT_KEYS` list — reading and
+  stripping must not drift apart, or the pane promises an erasure that does
+  not happen.
 - Documents are held in an in-memory `DOCS` dict keyed by a generated session
   id — there is no persistence and no auth; this is meant to run locally only.
 - `src/probe.py` reads the document once, when it is opened, and the inspector

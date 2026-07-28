@@ -39,7 +39,7 @@ from src.config import (
     env_flag,
 )
 from src.logs import log_event
-from src.probe import inspect_document
+from src.probe import STRUCT_TEXT_KEYS, inspect_document
 
 PACKAGE_DIR = Path(__file__).parent
 
@@ -444,11 +444,26 @@ def _rename_layers(doc):
         doc.xref_set_key(xref, "Name", fitz.get_pdf_str(f"layer {i}"))
 
 
+# /Alt, /ActualText and /E hang off the structure tree, not off the page:
+# redaction never reaches them, and on a scanned page they are often the only
+# text the file carries. Emptied rather than deleted, so a tagged document stays
+# structurally valid.
+def _strip_struct_text(doc):
+    for xref in range(1, doc.xref_length()):
+        with contextlib.suppress(Exception):
+            if doc.xref_get_key(xref, "Type")[1] != "/StructElem":
+                continue
+            for key, _ in STRUCT_TEXT_KEYS:
+                if doc.xref_get_key(xref, key)[0] == "string":
+                    doc.xref_set_key(xref, key, fitz.get_pdf_str(""))
+
+
 def _scrub_document(doc):
     """Strip the identifying traces that do not live in the page content.
 
     Redaction leaves these untouched: metadata, XMP, bookmarks (often the
-    student's name), attachments, JavaScript, links and form answers. Each step
+    student's name), attachments, JavaScript, links, form answers and the text
+    the structure tree carries for a page. Each step
     is best-effort; one unsupported by the file must not fail the export.
 
     Args:
@@ -459,6 +474,7 @@ def _scrub_document(doc):
         lambda: doc.del_xml_metadata(),
         lambda: doc.set_toc([]),
         lambda: _rename_layers(doc),
+        lambda: _strip_struct_text(doc),
         lambda: doc.scrub(redactions=False, clean_pages=False),
     ):
         with contextlib.suppress(Exception):

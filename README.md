@@ -114,6 +114,12 @@ column on the far left. Between them, the pane accounts for:
 - **metadata** and **XMP** — author, title, keywords, and the scanner or
   application that produced the file;
 - **bookmarks**, often literally "Copie de <student name>";
+- **opaque covers** — a white box painted over a scan hides pixels without
+  removing one of them. Every renderer paints the box, so the area looks blank
+  here too and nothing invites you to draw a zone there, while the image still
+  carries the original: any OCR, "extract images" or object-delete gets it
+  back. The pane outlines those areas in red and counts them as *still there*
+  until a zone covers one — a zone does destroy the pixels underneath;
 - **text carried outside the pages** — a tagged PDF describes a figure in
   `/Alt`, stores the characters behind a glyph run in `/ActualText` and an
   abbreviation's expansion in `/E`. Readers show and copy it, indexers index

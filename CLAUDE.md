@@ -66,6 +66,12 @@ allowed a one-line comment instead of a docstring.
   `src/static/app.js`). `--page-w` is set from JS because a CSS percentage
   would resolve against a container that is itself sized by its pages once
   zoomed in.
+- A white box over a scan is the tool's worst case, not a redaction: it looks
+  like an erasure on the left, so nothing prompts a zone, while the image keeps
+  every pixel. `_covers()` in `src/probe.py` reports opaque fills lying inside
+  an image, and the inspector marks them "still there" until a zone reaches
+  them. The rectangle containing the whole image is the page background — it
+  must stay excluded, or every scan cries wolf.
 - Not everything a page carries is drawn on it: `/Alt`, `/ActualText` and `/E`
   hang off the structure tree, so redaction cannot reach them and only the
   scrubbing removes them. `src/probe.py` reads those keys and `src/app.py`

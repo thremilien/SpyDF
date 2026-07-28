@@ -201,3 +201,88 @@ def test_structure_tree_text_is_kept_without_the_checkbox(client):
         "STRUCTALTOMICRON",
         "STRUCTACTUALPI",
     ]
+
+
+def build_covered_scan() -> bytes:
+    """A scan with a red block, hidden under an opaque white rectangle.
+
+    The shape ilovepdf-style "redaction" takes, and the one the pane exists for:
+    the page reads blank there, the image still holds every pixel.
+    """
+    scan = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 400, 400), False)
+    scan.set_rect(scan.irect, (255, 255, 255))
+    scan.set_rect(fitz.IRect(40, 40, 200, 90), (255, 0, 0))  # the "name"
+
+    doc = fitz.open()
+    page = doc.new_page(width=300, height=300)
+    page.insert_image(fitz.Rect(20, 20, 280, 280), pixmap=scan)
+    page.draw_rect(COVERED_RECT, color=None, fill=(1, 1, 1))
+
+    out = doc.tobytes()
+    doc.close()
+    return out
+
+
+COVERED_RECT = fitz.Rect(45, 45, 150, 80)  # over the red block, inside the image
+
+
+def red_pixels(data: bytes) -> int:
+    """How many red pixels the page's embedded image still holds."""
+    doc = fitz.open(stream=data, filetype="pdf")
+    page = doc[0]
+    xref = page.get_images(full=True)[0][0]
+    pm = fitz.Pixmap(doc.extract_image(xref)["image"])
+    n = sum(
+        1
+        for y in range(pm.height)
+        for x in range(pm.width)
+        if pm.pixel(x, y)[0] > 200 and pm.pixel(x, y)[1] < 80 and pm.pixel(x, y)[2] < 80
+    )
+    doc.close()
+    return n
+
+
+def test_inspect_reports_an_opaque_cover_over_a_scan():
+    """A white box is not an erasure: the pane must say so, since the page shows
+    nothing there and nothing invites a zone."""
+    page = inspect_document(build_covered_scan())["pages"][0]
+    assert len(page["covers"]) == 1
+    cov = page["covers"][0]
+    assert cov["color"] == [1.0, 1.0, 1.0]
+    assert fitz.Rect(cov["rect"]).intersects(COVERED_RECT)
+
+
+def test_a_page_background_is_not_reported_as_a_cover():
+    """The white rectangle a page is painted on contains the image: flagging it
+    would cry wolf on every scan."""
+    doc = fitz.open()
+    page = doc.new_page(width=300, height=300)
+    page.draw_rect(page.rect, color=None, fill=(1, 1, 1))
+    pm = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 100, 100), False)
+    pm.set_rect(pm.irect, (200, 200, 200))
+    page.insert_image(fitz.Rect(50, 50, 250, 250), pixmap=pm)
+    data = doc.tobytes()
+    doc.close()
+
+    assert inspect_document(data)["pages"][0]["covers"] == []
+
+
+def test_a_zone_over_a_cover_destroys_the_pixels_underneath(client):
+    """What the pane promises, the export must deliver: redacting a covered area
+    has to reach the image, not just repaint the box."""
+    data = build_covered_scan()
+    assert red_pixels(data) > 100  # the name is there, under the cover
+
+    sid = open_doc(client, data)
+    r = client.post(
+        "/api/export",
+        json={
+            "sid": sid,
+            "zones": {"0": [{"type": "rect", "points": rect_points(tuple(COVERED_RECT))}]},
+            "strip_meta": True,
+            "deleted_pages": [],
+        },
+    )
+    assert r.status_code == 200, r.text
+    out = client.get(r.json()["download"]).content
+    assert red_pixels(out) == 0

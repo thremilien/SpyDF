@@ -5,6 +5,12 @@ import fitz
 MAX_SPANS = 30_000  # guard rail on a very long document
 SNIPPET = 2000  # a whole script is never returned
 
+# An opaque rectangle painted over an image. Below these sizes it is decoration
+# (a rule, a bullet), not something dropped on a scan to hide a name.
+COVER_MIN_SIDE = 4.0  # PDF points
+COVER_MIN_AREA_RATIO = 0.0005  # of the page area
+COVER_TOLERANCE = 1.0  # a cover flush with the image edge still counts as inside
+
 META_LABELS = [
     ("title", "Title"),
     ("author", "Author"),
@@ -323,6 +329,56 @@ def _images(page) -> list[dict]:
     return out
 
 
+def _covers(page, image_rects) -> list[dict]:
+    """Find the opaque rectangles painted over an image.
+
+    A white box dropped on a scan removes nothing: the image still carries, byte
+    for byte, what the box hides. Every renderer paints the box, so the area
+    looks blank — including in this app, where the user then has no reason to
+    draw a zone there — while anything reading the image instead of the composed
+    page (OCR, "extract images", an editor deleting the overlay) gets the
+    original back. On an exam header that is the student's name.
+
+    A rectangle containing the whole image is the page background, not a cover,
+    so only fills lying inside an image count.
+
+    Args:
+        page: The page to read.
+        image_rects: The rectangles the page's images occupy.
+
+    Returns:
+        One entry per cover, with its rectangle and fill colour.
+    """
+    if not image_rects:
+        return []
+    try:
+        drawings = page.get_drawings()
+    except Exception:
+        return []
+    page_area = abs(page.rect.width * page.rect.height) or 1.0
+    pad = (-COVER_TOLERANCE, -COVER_TOLERANCE, COVER_TOLERANCE, COVER_TOLERANCE)
+    grown = [(r + pad, r) for r in image_rects]
+    out, seen = [], set()
+    for d in drawings:
+        if "f" not in (d.get("type") or "") or d.get("fill") is None:
+            continue
+        if (d.get("fill_opacity") if d.get("fill_opacity") is not None else 1) < 0.99:
+            continue
+        r = d["rect"]
+        if r.width < COVER_MIN_SIDE or r.height < COVER_MIN_SIDE:
+            continue
+        if abs(r.width * r.height) < page_area * COVER_MIN_AREA_RATIO:
+            continue
+        if not any(g.contains(r) and not r.contains(im) for g, im in grown):
+            continue
+        key = tuple(_r(r))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"rect": list(key), "color": [round(float(c), 3) for c in d["fill"]]})
+    return out
+
+
 def inspect_document(data: bytes) -> dict:
     """Read everything the document carries without displaying it.
 
@@ -354,6 +410,8 @@ def inspect_document(data: bytes) -> dict:
                 drawings = len(page.get_drawings())
             except Exception:
                 drawings = 0
+            images = _images(page)
+            image_rects = [fitz.Rect(im["rect"]) for im in images if im["rect"]]
             pages.append(
                 {
                     "n": n,
@@ -361,7 +419,8 @@ def inspect_document(data: bytes) -> dict:
                     "annots": _annots(page),
                     "widgets": _widgets(page),
                     "links": _links(page),
-                    "images": _images(page),
+                    "images": images,
+                    "covers": _covers(page, image_rects),
                     "struct": structs.get(n, []),
                     "drawings": drawings,
                 }

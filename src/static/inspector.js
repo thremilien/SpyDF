@@ -123,6 +123,10 @@ function statusOf(it) {
     case 'annot':
     case 'image':
       return hit ? GONE : KEPT;
+    case 'cover':
+      // the white box hides the pixels, it does not remove them: only a zone
+      // over it destroys what is underneath
+      return hit ? { cls: 'gone', label: 'erased' } : { cls: 'kept', label: 'still there' };
     case 'widget':
       if (hit) return GONE;
       return stripMeta() ? { cls: 'partial', label: 'value reset' } : KEPT;
@@ -255,6 +259,7 @@ function buildRail(d, pagesData) {
    ['ig-legend-hidden', 'text invisible on screen but indexed'],
    ['ig-legend-annot', 'annotation, field, link, image'],
    ['ig-legend-zone', 'zone drawn on the left'],
+   ['ig-legend-cover', 'opaque cover: hidden, not removed'],
    ['ig-legend-gone', 'what will disappear on export']].forEach(([cls, text]) => {
     const line = el('div', 'ins-legend');
     line.append(el('span', `ins-legend-mark ${cls}`));
@@ -347,9 +352,20 @@ function buildGhost(p) {
     svg.append(g);
     addItem({ rule: 'image', page: p.n, rect: i.rect, el: g, chip: null, notable: false });
   });
+  // An opaque rectangle over a scan looks like an erasure and is not one: the
+  // area reads blank on the left, so nothing invites a zone there, while the
+  // image still carries what it hides.
+  (p.covers || []).forEach(c => {
+    const g = boxNode(c.rect, 'ig-cover',
+      'Opaque rectangle over the image: it hides what is underneath, it does not '
+      + 'remove it. Draw a zone here to destroy those pixels.');
+    svg.append(g);
+    addItem({ rule: 'cover', page: p.n, rect: c.rect, el: g, chip: null, notable: true });
+  });
 
   cont.append(svg, tab);
   const struct = p.struct || [];
+  const covers = p.covers || [];
   if (!spanCount) {
     // "only an image" was said even when the file described the page in its
     // structure tree — text no zone can reach, and the only one such a page has.
@@ -361,6 +377,7 @@ function buildGhost(p) {
   const counts = [
     spanCount && `${spanCount} text fragment(s)`,
     struct.length && `${struct.length} text item(s) outside the page`,
+    covers.length && `${covers.length} covered area(s)`,
     p.annots.length && `${p.annots.length} annotation(s)`,
     p.widgets.length && `${p.widgets.length} field(s)`,
     p.links.length && `${p.links.length} link(s)`,

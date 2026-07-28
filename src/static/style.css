@@ -311,6 +311,9 @@ header {
 .ig-widget { stroke: #6b4fa8; fill: #6b4fa8; fill-opacity: .08; }
 .ig-link { stroke: var(--teal); fill: var(--teal); fill-opacity: .07; }
 .ig-image { stroke: var(--ink-faint); stroke-dasharray: 3 3; }
+/* an opaque cover: loud on purpose, it is the one trace that looks like an
+   erasure on the left while removing nothing */
+.ig-cover { stroke: var(--accent); stroke-width: 1.6; fill: var(--accent); fill-opacity: .14; }
 .ig-box.is-gone { stroke: #2f7a4d; fill: #2f7a4d; fill-opacity: .07; stroke-dasharray: 2 3; }
 .ig-item:hover .ig-box { stroke-width: 2; }
 .ig-zone { fill-opacity: .1; stroke-width: 1.2; vector-effect: non-scaling-stroke; stroke-dasharray: 4 3; }
@@ -323,6 +326,7 @@ header {
 .ig-legend-hidden { background: #a06a12; border-color: #8a5210; }
 .ig-legend-annot { background: #c58a2e33; border-color: #8a5210; }
 .ig-legend-zone { background: #7a2e3a1a; border-color: var(--accent); border-style: dashed; }
+.ig-legend-cover { background: #7a2e3a24; border-color: var(--accent); }
 .ig-legend-gone { background: #2f7a4d12; border-color: #2f7a4d; border-style: dashed; }
 
 .ins-summary {

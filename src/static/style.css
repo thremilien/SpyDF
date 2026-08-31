@@ -102,6 +102,9 @@ header {
 .btn-group .btn:hover:not(:disabled) { background: #e4e8e3; }
 .btn-group .btn.active { background: var(--paper); border-color: var(--line); box-shadow: 0 1px 2px #0001; }
 .tool-btn.active { color: var(--accent); }
+/* The view switcher carries no label, and its icons are outlines: the white
+   pill alone does not say which pane you are in, the accent does. */
+.view-btn.active { color: var(--accent); }
 .mode-btn.active[data-mode="delete"] { color: var(--accent); }
 .mode-btn.active[data-mode="pixelate"] { color: var(--teal); }
 
@@ -463,6 +466,34 @@ body.panning, body.panning #stage, body.panning #inspector, body.panning .page-l
 .zm-pick:hover { background: #f1f3f0; color: var(--ink); }
 .zm-pick.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 body.picking .page-layer, body.picking .zone { cursor: crosshair; }
+
+/* ---------- the header on one row ----------
+   With every label showing the bar wants 1924px, so it wrapped to a second row
+   on any ordinary screen — and a wrapped toolbar costs the pages the height it
+   takes. The labels retire in the order they are least missed, each step
+   measured: views 1924 -> 1697, tools -> 1518, modes -> 1421.
+
+   Written the narrow way round — hidden by default, restored when there is
+   room — so the label geometry lives in one place. Every one of these buttons
+   carries its own aria-label and title, so a retired label costs the name
+   neither to a screen reader nor to a mouse. The views never come back: of the
+   three groups theirs are the icons that say it themselves — one page, two
+   panes, lines — and their labels are the longest in the bar. */
+.tool-btn, .mode-btn, .view-btn { padding: 7px; gap: 0; }
+.tool-btn .lbl, .mode-btn .lbl, .view-btn .lbl { display: none; }
+
+/* the modes hold out longest: a coloured dot on its own names nothing */
+@media (min-width: 1521px) {
+  .mode-btn { padding: 7px 11px; gap: 6px; }
+  .mode-btn .lbl { display: inline; }
+}
+@media (min-width: 1701px) {
+  .tool-btn { padding: 7px 11px; gap: 6px; }
+  .tool-btn .lbl { display: inline; }
+}
+@media (max-width: 1520px) {
+  .wm-field input { width: 120px; }
+}
 
 @media (max-width: 760px) {
   header { gap: 6px; }

@@ -1,6 +1,7 @@
 """FastAPI app: routes for opening, rendering, redacting and downloading PDFs."""
 
 import contextlib
+import html
 import logging
 import math
 import mimetypes
@@ -12,11 +13,27 @@ import uuid
 from pathlib import Path
 
 import fitz
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.staticfiles import StaticFiles
 
+from src.auth import (
+    COOKIE_NAME,
+    check_credentials,
+    is_enabled,
+    is_locked,
+    issue_token,
+    note_failure,
+    note_success,
+    token_is_valid,
+)
 from src.config import (
+    AUTH_TTL,
     LEAK_COVERAGE,
     LOG_FILENAMES_VAR,
     MASK_MAX_PX,
@@ -129,6 +146,146 @@ def _log_ip_fields(request: Request) -> dict:
     if xff:
         fields["xff"] = xff.split(",")[0].strip()
     return fields
+
+
+# ---------- login ----------
+# Everything below is inert while no password is configured (see src.auth).
+
+# Reachable without a cookie: the login page itself, what it needs to render,
+# and the icon a browser asks for before anything else.
+PUBLIC_PATHS = frozenset({"/login", "/logout", "/favicon.ico"})
+
+LOGIN_ERRORS = {
+    "bad": "Wrong user name or password.",
+    "locked": "Too many attempts. Wait a few minutes before trying again.",
+}
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    """Gate every route behind the login cookie.
+
+    A page asks to be redirected to the login form; anything else — the client's
+    own fetches — gets a 401 it can act on, because answering a redirect to an
+    XHR would hand it a login page where it expected JSON.
+
+    Args:
+        request: The incoming request.
+        call_next: The rest of the stack.
+
+    Returns:
+        The downstream response, or the redirect/401 that replaces it.
+    """
+    path = request.url.path
+    if not is_enabled() or path in PUBLIC_PATHS or path.startswith("/static/"):
+        return await call_next(request)
+    if token_is_valid(request.cookies.get(COOKIE_NAME)):
+        return await call_next(request)
+    if "text/html" in request.headers.get("accept", ""):
+        return RedirectResponse("/login", status_code=303)
+    return JSONResponse({"detail": "not signed in"}, status_code=401)
+
+
+def _login_page(error: str = "", user: str = "") -> str:
+    """Render the login form.
+
+    Args:
+        error: A key of `LOGIN_ERRORS`, or empty for no banner.
+        user: The user name to put back in the field. It comes from the form,
+            so it is escaped rather than trusted.
+
+    Returns:
+        The page, as HTML.
+    """
+    page = (PACKAGE_DIR / "templates" / "login.html").read_text(encoding="utf-8")
+    message = LOGIN_ERRORS.get(error, "")
+    banner = (
+        '<p class="login-error" role="alert">'
+        '<svg viewBox="0 0 18 18" fill="none" aria-hidden="true">'
+        '<circle cx="9" cy="9" r="6.5" stroke="currentColor" stroke-width="1.4"/>'
+        '<line x1="9" y1="5.5" x2="9" y2="9.5" stroke="currentColor" stroke-width="1.5" '
+        'stroke-linecap="round"/>'
+        '<circle cx="9" cy="12.2" r=".9" fill="currentColor"/></svg>'
+        f"<span>{html.escape(message)}</span></p>"
+        if message
+        else ""
+    )
+    return page.replace("{{error}}", banner).replace("{{user}}", html.escape(user, quote=True))
+
+
+# A cookie is only sent back over TLS when the request itself came over TLS;
+# behind Traefik that shows in the forwarded header, not in the URL.
+def _is_https(request: Request) -> bool:
+    forwarded = request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+    return forwarded == "https" or request.url.scheme == "https"
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_form(request: Request):
+    """Show the login page, or send an already signed-in browser to the app."""
+    if not is_enabled() or token_is_valid(request.cookies.get(COOKIE_NAME)):
+        return RedirectResponse("/", status_code=303)
+    return HTMLResponse(_login_page())
+
+
+@app.post("/login", response_class=HTMLResponse)
+def login_submit(request: Request, username: str = Form(""), password: str = Form("")):
+    """Check a submitted pair and hand out the session cookie.
+
+    Neither the submitted name nor the password ever reaches the log: a password
+    typed into the name field would land there in clear. Only the outcome and
+    the address are recorded.
+
+    Args:
+        request: The incoming request, read for its address fields.
+        username: The submitted user name.
+        password: The submitted password.
+
+    Returns:
+        A redirect to the app, or the form again with an error banner.
+    """
+    if not is_enabled():
+        return RedirectResponse("/", status_code=303)
+    ip_fields = _log_ip_fields(request)
+    ip = ip_fields["ip"]
+
+    if is_locked(ip):
+        log_event("login_rejected", level=logging.WARNING, reason="locked_out", **ip_fields)
+        return HTMLResponse(_login_page("locked", username), status_code=429)
+
+    if not check_credentials(username, password):
+        tries = note_failure(ip)
+        log_event(
+            "login_rejected",
+            level=logging.WARNING,
+            reason="bad_credentials",
+            tries=tries,
+            **ip_fields,
+        )
+        return HTMLResponse(_login_page("bad", username), status_code=401)
+
+    note_success(ip)
+    log_event("login", **ip_fields)
+    response = RedirectResponse("/", status_code=303)
+    response.set_cookie(
+        COOKIE_NAME,
+        issue_token(),
+        max_age=AUTH_TTL,
+        httponly=True,  # the cookie is the session: JS has no business reading it
+        samesite="lax",
+        secure=_is_https(request),
+        path="/",
+    )
+    return response
+
+
+@app.post("/logout")
+def logout(request: Request):
+    """Drop the cookie and go back to the login page."""
+    log_event("logout", **_log_ip_fields(request))
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(COOKIE_NAME, path="/")
+    return response
 
 
 def _page_geometry(doc) -> list[dict]:
@@ -973,9 +1130,25 @@ def api_download(key: str):
     )
 
 
+# The sign-out control, or nothing at all when there is nothing to sign out of.
+SIGNOUT_HTML = (
+    '<div class="sep"></div>'  # it sits next to Export: a misclick must not be one key away
+    '<form class="signout" method="post" action="/logout">'
+    '<button type="submit" class="btn icon-only" title="Sign out" aria-label="Sign out">'
+    '<svg viewBox="0 0 18 18" fill="none">'
+    '<path d="M11 5.5V4a1 1 0 00-1-1H4.5a1 1 0 00-1 1v10a1 1 0 001 1H10a1 1 0 001-1v-1.5" '
+    'stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>'
+    '<path d="M12 6.5L14.5 9 12 11.5" stroke="currentColor" stroke-width="1.5" '
+    'stroke-linecap="round" stroke-linejoin="round"/>'
+    '<line x1="7.5" y1="9" x2="14" y2="9" stroke="currentColor" stroke-width="1.5" '
+    'stroke-linecap="round"/></svg></button></form>'
+)
+
+
 # The single page of the app; logs one connection event.
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
     ua = request.headers.get("user-agent", "")[:UA_MAX_LEN]
     log_event("connect", **_log_ip_fields(request), ua=ua)
-    return (PACKAGE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
+    page = (PACKAGE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
+    return page.replace("{{signout}}", SIGNOUT_HTML if is_enabled() else "")

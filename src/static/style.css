@@ -472,3 +472,70 @@ body.picking .page-layer, body.picking .zone { cursor: crosshair; }
   .page-container { animation: none; }
   #busybar::after { animation: none; width: 100%; }
 }
+
+/* ---------- login ----------
+   Its own page, not the browser's dialog: the same paper card, serif heading
+   and accent as the workspace, so signing in already looks like the app. The
+   rules are scoped to body.login-page — the app shell above is a flex column
+   with a fixed header, which this page has none of. */
+body.login-page {
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; overflow: auto;
+  /* a faint accent wash at the top, so the page is not a flat grey field */
+  background:
+    radial-gradient(720px 380px at 50% -12%, var(--accent-soft), transparent 70%),
+    var(--bg);
+}
+.login-card {
+  width: 100%; max-width: 380px; margin: auto;
+  background: var(--paper); border: 1px solid var(--paper-edge); border-radius: 16px;
+  padding: 32px 32px 26px;
+  box-shadow: 0 1px 3px #0001, 0 12px 32px #0000000f;
+  animation: page-in .25s ease both;
+}
+.login-brand { display: flex; align-items: center; gap: 9px; margin-bottom: 22px; }
+.login-card h1 {
+  font-family: var(--font-display); font-size: 22px; font-weight: 600;
+  margin: 0 0 6px; letter-spacing: .1px;
+}
+.login-sub { margin: 0 0 20px; font-size: 13.5px; line-height: 1.55; color: var(--ink-soft); }
+
+.login-form { display: flex; flex-direction: column; gap: 14px; }
+.field { display: flex; flex-direction: column; gap: 5px; }
+.field-label {
+  font-size: 10.5px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.field input {
+  width: 100%; padding: 9px 11px; font: inherit; font-size: 14px;
+  color: var(--ink); background: var(--paper);
+  border: 1px solid var(--line); border-radius: 7px;
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+.field input:hover { border-color: #c9d0cb; }
+.field input:focus {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.login-submit { justify-content: center; margin-top: 4px; padding: 10px 14px; font-size: 14px; }
+
+/* same warning tone as the inspector's summary: one vocabulary for "careful" */
+.login-error {
+  display: flex; align-items: flex-start; gap: 8px;
+  margin: 0 0 18px; padding: 10px 12px; border-radius: 9px;
+  border: 1px solid #e0c089; background: #fdf6e9;
+  font-size: 12.5px; line-height: 1.5; color: #8a5210;
+}
+.login-error svg { width: 15px; height: 15px; flex: none; margin-top: 1px; }
+
+.login-foot {
+  margin: 22px 0 0; padding-top: 16px; border-top: 1px solid var(--line);
+  font-family: var(--font-mono); font-size: 11px; line-height: 1.5; color: var(--ink-faint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-card { animation: none; }
+}
+
+/* the sign-out control, injected into the header when a password is set */
+.signout { display: flex; margin-left: 2px; }
+.signout .btn:hover { color: var(--accent); }

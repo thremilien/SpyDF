@@ -91,6 +91,16 @@ function redo() {
   restore(redoStack.pop());
 }
 
+// ---------- signed out mid-session ----------
+// The login cookie can expire while the tab stays open. Every call that meets a
+// 401 hands the user back to the login page: the alternative is an error string
+// in the status bar for something no retry can fix.
+function signedOut(status) {
+  if (status !== 401) return false;
+  location.href = '/login';
+  return true;
+}
+
 // ---------- opening ----------
 // fetch() cannot report upload progress: on a PDF of several dozen MB the UI
 // would stay silent for the whole upload.
@@ -105,6 +115,7 @@ function uploadPdf(f, onProgress) {
       if (e.lengthComputable) onProgress(e.loaded / e.total);
     };
     xhr.onload = () => {
+      if (signedOut(xhr.status)) return;
       if (xhr.status >= 200 && xhr.status < 300) {
         try { resolve(JSON.parse(xhr.responseText)); }
         catch { reject(new Error('unreadable response from the server')); }
@@ -1316,6 +1327,7 @@ $('export').onclick = async () => {
         watermark: $('wm').value,
       })
     });
+    if (signedOut(r.status)) return;
     if (!r.ok) {
       const msg = await r.text().catch(() => '');
       setBusy(false);
@@ -1376,6 +1388,9 @@ async function restoreState() {
   if (!saved || !saved.sid) return;
 
   const r = await fetch(`/api/session/${saved.sid}`).catch(() => null);
+  // A 401 says the login expired, not the document: the marking is kept, and the
+  // login page brings the tab back here with it.
+  if (r && signedOut(r.status)) return;
   if (!r || !r.ok) { clearState(); return; }   // expired, or the server restarted
   const d = await r.json();
 

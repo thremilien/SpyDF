@@ -64,6 +64,33 @@ def env_flag(name: str) -> bool:
 HOST = env_str("HOST", "127.0.0.1")
 PORT = env_int("PORT", 8765)
 
+
+# ---------- login ----------
+# Off entirely until a password is set: on localhost the app is reachable by
+# whoever is already at the keyboard, and a login page there would be friction
+# rather than a defence. Behind a domain, set SPYDF_AUTH_PASSWORD — in clear or
+# as `sha256:<hex>` — and the app asks for it on its own page instead of leaving
+# it to the browser's dialog. All three are read at call time so a test (or an
+# operator reloading the process) can set them after this module was imported.
+def auth_user() -> str:
+    """The single account name the login page accepts."""
+    return env_str("SPYDF_AUTH_USER", "admin")
+
+
+def auth_password() -> str:
+    """The configured password, in clear or as `sha256:<hex>`. Empty disables the login."""
+    return env_str("SPYDF_AUTH_PASSWORD", "")
+
+
+def auth_secret() -> str:
+    """Key signing the login cookie; empty means a fresh one per process."""
+    return env_str("SPYDF_AUTH_SECRET", "")
+
+
+AUTH_TTL = env_int("SPYDF_AUTH_TTL", 12 * 3600)  # how long one login stays valid
+AUTH_MAX_TRIES = env_int("SPYDF_AUTH_MAX_TRIES", 10)  # failures per address before the wait
+AUTH_LOCKOUT = env_int("SPYDF_AUTH_LOCKOUT", 300)  # length of that wait, and of the window
+
 # ---------- sessions ----------
 MAX_UPLOAD_BYTES = env_int("SPYDF_MAX_UPLOAD_BYTES", 200 * 1024 * 1024)
 SESSION_TTL = env_int("SPYDF_SESSION_TTL", 2 * 3600)  # a forgotten doc must not sit in RAM

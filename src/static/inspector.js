@@ -653,6 +653,7 @@ onDocumentOpened = async sid => {
   insPages.append(el('p', 'ins-empty', 'Reading the document content…'));
   try {
     const r = await fetch(`/api/inspect/${sid}`);
+    if (signedOut(r.status)) return;   // defined in app.js, loaded first
     if (!r.ok) throw new Error(await r.text());
     const d = await r.json();
     inspectData = d;

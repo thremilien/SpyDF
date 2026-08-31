@@ -38,7 +38,9 @@ allowed a one-line comment instead of a docstring.
 - `src/server.py` — uvicorn bootstrap
 - `src/config.py` — every tunable, read from the environment and from `.env`;
   `.env.example` is the committed reference, `.env` itself is ignored
-- `src/templates/index.html` + `src/static/` — the UI (served directly, no templating engine)
+- `src/auth.py` — the login: the credentials, the signed cookie, the lockout
+- `src/templates/index.html` + `src/templates/login.html` + `src/static/` — the
+  UI (served directly, no templating engine)
 - `src/imagemeta.py` — the metadata inside an image stream, read and stripped
 - `src/logs.py` — the `"spydf"` logger: stderr always, optional rotating
   file; `log_event()` is the only thing that should write to it
@@ -113,7 +115,26 @@ allowed a one-line comment instead of a docstring.
   stripping must not drift apart, or the pane promises an erasure that does
   not happen.
 - Documents are held in an in-memory `DOCS` dict keyed by a generated session
-  id — there is no persistence and no auth; this is meant to run locally only.
+  id — there is no persistence; this is meant to run locally, or behind the
+  login below.
+- The login is off until `SPYDF_AUTH_PASSWORD` is set, and then it is the app's
+  own page (`/login`), not the browser's Basic-auth dialog — that dialog cannot
+  be styled, cannot say *why* it refused, and cannot be signed out of. One
+  middleware in `src/app.py` gates everything: a page request is redirected to
+  `/login`, anything else gets a 401, because answering a redirect to a fetch
+  hands it a login page where it expected JSON. The client side of that is
+  `signedOut()` in `src/static/app.js`, which every call that can meet a 401
+  goes through. The cookie is `HttpOnly`/`SameSite=Lax` and its signing key is
+  derived from the user name and the password (`src/auth.py`), so changing
+  either one invalidates the cookies already out there without a revocation
+  list. Nothing about a login attempt but the address and the outcome is
+  logged — a password typed into the name field would otherwise land in the log
+  in clear.
+- Both HTML templates are served by `src/app.py` with a `{{placeholder}}`
+  replaced by markup the server picks from a fixed set (`{{signout}}`,
+  `{{error}}`) — there is still no templating engine, and the one value that
+  comes from the user (the submitted name, put back in the field) goes through
+  `html.escape`.
 - `src/probe.py` reads the document once, when it is opened, and the inspector
   renders that snapshot. Nothing mutates the session document today, so it
   stays accurate; anything that does (reloading the file, undoing a redaction

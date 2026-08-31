@@ -208,6 +208,27 @@ exported page. A preview appears on the pages as you type, so you can see where
 it lands. It is applied *after* the leak check runs, so the watermark's own text
 can never be mistaken for — or mask — a leak.
 
+### Signing in
+
+With no password configured — the default, and what a run on `127.0.0.1`
+wants — SpyDF opens straight onto the workspace. Set `SPYDF_AUTH_PASSWORD` and
+it asks for it first, on a page of its own rather than through the browser's
+Basic-auth dialog: the app's own card, the error spelled out in place, the user
+name kept after a wrong password, and a **sign out** button at the end of the
+header once you are in.
+
+A login lasts `SPYDF_AUTH_TTL` seconds (12 h by default) and rides in one
+cookie, `HttpOnly` and `SameSite=Lax`, `Secure` as soon as the request arrives
+over HTTPS. Nothing else about you is stored, on the server or in the browser.
+If the login expires while a tab is still open, the next call it makes hands
+you back to the login page rather than failing in the status bar — the marking
+in the tab survives, and so does the document, as long as its own session has
+not expired.
+
+Failed attempts are counted per address: `SPYDF_AUTH_MAX_TRIES` of them and
+that address waits `SPYDF_AUTH_LOCKOUT` seconds before it may try again. The
+log records the address and the outcome, never the submitted name or password.
+
 ## Development
 
 ```bash
@@ -229,6 +250,7 @@ and that the image still decodes, pixel for pixel, afterwards.
 - `main.py` — entry point
 - `src/app.py` — FastAPI routes (open/render/inspect/export/download)
 - `src/config.py` — every tunable, read from the environment and `.env`
+- `src/auth.py` — the login: credentials, signed cookie, lockout
 - `src/logs.py` — the audit log (connection, import, export)
 - `src/probe.py` — read-only extraction of the document's invisible payload
 - `src/imagemeta.py` — the metadata carried inside an image, read and removed
@@ -269,6 +291,26 @@ container's `environment:` block in charge.
 | --- | --- | --- |
 | `HOST` | `127.0.0.1` | interface to bind; the Docker image sets `0.0.0.0` |
 | `PORT` | `8765` | port to bind |
+
+**Login** — off entirely while `SPYDF_AUTH_PASSWORD` is empty.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `SPYDF_AUTH_USER` | `admin` | the one account name the login page accepts |
+| `SPYDF_AUTH_PASSWORD` | *(unset)* | in clear, or as `sha256:<hex>`; empty means no login page at all |
+| `SPYDF_AUTH_SECRET` | *(unset)* | signs the login cookie; unset draws a fresh one per process, so a restart signs everybody out |
+| `SPYDF_AUTH_TTL` | `43200` | seconds one login stays valid |
+| `SPYDF_AUTH_MAX_TRIES` | `10` | failures from one address before it has to wait |
+| `SPYDF_AUTH_LOCKOUT` | `300` | length of that wait, and of the window the failures are counted in |
+
+To keep the password out of the environment in clear:
+
+```bash
+python -c "import hashlib,getpass;print('sha256:'+hashlib.sha256(getpass.getpass().encode()).hexdigest())"
+```
+
+Changing the user name or the password invalidates every cookie already issued,
+since the cookie key is derived from both.
 
 **Sessions** — documents live in memory only, never on disk.
 
@@ -353,9 +395,11 @@ through Traefik instead. That network is declared `external` because Dokploy's
 installer creates it — on a machine without it `docker compose up` fails, so
 locally use the plain `docker run` above.
 
-The app has **no authentication and no persistence** (documents live in an
-in-memory dict, keyed by session id). Anyone who can reach the host on 8765
-can use it and upload to it, and that port bypasses Traefik — so any auth
-middleware you add to the router does not cover it. Firewall the port, or
-switch the mapping to `127.0.0.1:8765:8765` and reach it over an SSH tunnel,
-if the server is on a public network.
+The app has **no persistence** (documents live in an in-memory dict, keyed by
+session id) and, until you give it a password, **no authentication** either.
+Set `SPYDF_AUTH_PASSWORD` in the compose `environment:` block and the login
+above covers every route — including the published `8765`, which bypasses
+Traefik and so is *not* covered by auth middleware attached to the router.
+Set `SPYDF_AUTH_SECRET` too, or every redeploy signs everyone out. Firewalling
+the port, or switching the mapping to `127.0.0.1:8765:8765` and reaching it
+over an SSH tunnel, is still worth doing on a public network.

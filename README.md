@@ -312,6 +312,27 @@ python -c "import hashlib,getpass;print('sha256:'+hashlib.sha256(getpass.getpass
 Changing the user name or the password invalidates every cookie already issued,
 since the cookie key is derived from both.
 
+The app takes the password exactly as it arrives — spaces at either end, accents,
+anything — but a `.env` file read by Docker Compose does not, and that is where an
+awkward password quietly turns into a different one:
+
+| In the `.env` | What the container receives |
+| --- | --- |
+| `PW=abc$def` | `abc` — `$def` is read as a variable and substituted empty |
+| `PW=abc$$def` | `abc` — escaping does not survive the second pass either |
+| `PW=abc #def` | `abc` — a space then `#` starts a comment |
+| `PW=abc   ` | `abc` — trailing spaces go |
+| `PW="a\tb"` | `a<TAB>b` — quotes are unwrapped and escapes expanded |
+
+`@ ! % & * ( ) { } [ ] ' :` and accents all pass through untouched; `$` is the one
+character with no working escape. If your password contains one, configure it as
+`sha256:<hex>` instead — the digest is plain hex, so nothing in the chain can
+mangle it, and you still type the real password on the login page.
+
+To see what actually reached the app: `docker exec <container> printenv SPYDF_AUTH_PASSWORD`.
+The startup log line also says `login=on` or `login=off`, which tells you whether
+the variable arrived at all.
+
 **Sessions** — documents live in memory only, never on disk.
 
 | Variable | Default | What it does |

@@ -107,6 +107,31 @@ def test_a_sha256_password_is_accepted_too(client, login_on, monkeypatch):
     assert client.get("/").status_code == 200
 
 
+@pytest.mark.parametrize(
+    "password",
+    [
+        "Mot2Passé",  # compare_digest refuses a non-ASCII str: it must see bytes
+        "clé€uro",
+        "  padded  ",  # a password may begin or end with a space
+        "dollar$sign",
+        "quote\"and'quote",
+        "back\\slash",
+    ],
+)
+def test_an_awkward_password_is_still_checked(client, login_on, monkeypatch, password):
+    monkeypatch.setenv("SPYDF_AUTH_PASSWORD", password)
+    assert sign_in(client, password=password).status_code == 303
+    assert sign_in(client, password=password + "x").status_code == 401
+
+
+def test_an_awkward_password_works_hashed_too(client, login_on, monkeypatch):
+    password = "Mot2Passé€ !"
+    monkeypatch.setenv(
+        "SPYDF_AUTH_PASSWORD", "sha256:" + hashlib.sha256(password.encode()).hexdigest()
+    )
+    assert sign_in(client, password=password).status_code == 303
+
+
 def test_wrong_password_is_refused_and_says_so(client, login_on):
     r = sign_in(client, password="nope")
     assert r.status_code == 401

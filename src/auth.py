@@ -53,11 +53,21 @@ def _sign(expiry: int) -> str:
     return hmac.new(_signing_key(), str(expiry).encode("ascii"), hashlib.sha256).hexdigest()
 
 
+# Constant-time equality of two secrets, as bytes: compare_digest refuses a
+# str carrying anything but ASCII, and a password is free to carry more.
+def _same(submitted: str | None, configured: str) -> bool:
+    return hmac.compare_digest((submitted or "").encode("utf-8"), configured.encode("utf-8"))
+
+
 def check_credentials(user: str, password: str) -> bool:
     """Whether a submitted pair matches the configured one.
 
     The password may be configured in clear or as `sha256:<hex>`; both are
     compared in constant time, so a wrong one costs the same as a right one.
+
+    Everything is compared as UTF-8 bytes, never as `str`: `compare_digest`
+    raises on a string holding non-ASCII, so an accented password would have
+    blown up in here instead of being checked.
 
     Args:
         user: Submitted user name.
@@ -69,12 +79,12 @@ def check_credentials(user: str, password: str) -> bool:
     configured = auth_password()
     if not configured:
         return False
-    user_ok = hmac.compare_digest(user or "", auth_user())
+    user_ok = _same(user, auth_user())
     if configured.startswith("sha256:"):
         digest = hashlib.sha256((password or "").encode("utf-8")).hexdigest()
-        pw_ok = hmac.compare_digest(digest, configured[len("sha256:") :].strip().lower())
+        pw_ok = _same(digest, configured[len("sha256:") :].strip().lower())
     else:
-        pw_ok = hmac.compare_digest(password or "", configured)
+        pw_ok = _same(password, configured)
     return user_ok and pw_ok
 
 

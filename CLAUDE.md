@@ -130,6 +130,11 @@ allowed a one-line comment instead of a docstring.
   list. Nothing about a login attempt but the address and the outcome is
   logged — a password typed into the name field would otherwise land in the log
   in clear.
+- The credentials are compared as UTF-8 bytes (`_same` in `src/auth.py`), never
+  as `str`: `hmac.compare_digest` raises on a string holding non-ASCII, so an
+  accented password would blow up in the check rather than be refused. For the
+  same reason `auth_password()` reads the environment raw instead of through
+  `env_str`, which strips — a password may begin or end with a space.
 - Both HTML templates are served by `src/app.py` with a `{{placeholder}}`
   replaced by markup the server picks from a fixed set (`{{signout}}`,
   `{{error}}`) — there is still no templating engine, and the one value that

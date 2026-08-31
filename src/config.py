@@ -78,8 +78,13 @@ def auth_user() -> str:
 
 
 def auth_password() -> str:
-    """The configured password, in clear or as `sha256:<hex>`. Empty disables the login."""
-    return env_str("SPYDF_AUTH_PASSWORD", "")
+    """The configured password, in clear or as `sha256:<hex>`. Empty disables the login.
+
+    Read raw, not through `env_str`: that one strips, and a password is
+    entitled to begin or end with a space. Trimming it here would refuse the
+    very password the operator set, with nothing to show why.
+    """
+    return os.environ.get("SPYDF_AUTH_PASSWORD", "")
 
 
 def auth_secret() -> str:

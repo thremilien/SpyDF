@@ -6,6 +6,7 @@ import webbrowser
 import uvicorn
 
 from src.app import app
+from src.auth import is_enabled
 from src.config import HOST, PORT, log_file
 from src.logs import log_event, setup_logging
 
@@ -18,7 +19,15 @@ def main():
     three events that matter. Those are logged by hand in `src.app` instead.
     """
     setup_logging()
-    log_event("startup", host=HOST, port=PORT, log_file=log_file() or "-")
+    # login=off on a deployment that set a password means the variable never
+    # arrived: it is the one thing about the login worth a startup line.
+    log_event(
+        "startup",
+        host=HOST,
+        port=PORT,
+        login="on" if is_enabled() else "off",
+        log_file=log_file() or "-",
+    )
     url = f"http://127.0.0.1:{PORT}"
     print(f"SpyDF -> {url}")
     if HOST == "127.0.0.1":

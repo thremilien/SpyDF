@@ -102,9 +102,6 @@ header {
 .btn-group .btn:hover:not(:disabled) { background: #e4e8e3; }
 .btn-group .btn.active { background: var(--paper); border-color: var(--line); box-shadow: 0 1px 2px #0001; }
 .tool-btn.active { color: var(--accent); }
-/* The view switcher carries no label, and its icons are outlines: the white
-   pill alone does not say which pane you are in, the accent does. */
-.view-btn.active { color: var(--accent); }
 .mode-btn.active[data-mode="delete"] { color: var(--accent); }
 .mode-btn.active[data-mode="pixelate"] { color: var(--teal); }
 
@@ -119,8 +116,6 @@ header {
   min-width: 54px; justify-content: center; padding: 7px 4px;
 }
 
-.check { display: flex; align-items: center; gap: 6px; user-select: none; color: var(--ink-soft); font-size: 13px; cursor: pointer; }
-.check input { accent-color: var(--accent); }
 
 .sr-only {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
@@ -137,19 +132,13 @@ header {
 .wm-field input:hover { border-color: #c9d0cb; }
 .wm-field input:focus { border-color: var(--accent); }
 
-/* ---------- workspace: the document on the left, what it hides on the right ---------- */
+/* ---------- workspace: the document, filling the pane ---------- */
 #workspace { flex: 1; min-height: 0; display: flex; }
 #workspace > * { min-width: 0; min-height: 0; }
-.view-split #stage, .view-split #inspector { flex: 1 1 50%; }
-.view-pages #stage { flex: 1 1 100%; }
-.view-pages #inspector { display: none; }
-.view-inspect #stage { display: none; }
-.view-inspect #inspector { flex: 1 1 100%; }
+#stage { flex: 1 1 100%; }
 
-/* with no document open there is nothing to inspect: the drop zone takes the
-   full width and stays centred. */
-#workspace.no-doc #inspector { display: none; }
-#workspace.no-doc #stage { flex: 1 1 100%; justify-content: center; padding: 16px; }
+/* with no document open the drop zone takes the full width and stays centred. */
+#workspace.no-doc #stage { justify-content: center; padding: 16px; }
 
 /* ---------- stage: a scrolling region, like an embedded viewer ---------- */
 /* `safe center` keeps a zoomed page reachable: plain centring would push its
@@ -251,170 +240,6 @@ header {
 .zone-ghost-fill { fill: var(--ink); fill-opacity: .06; }
 .zone-ghost-hull { stroke: var(--ink-faint); stroke-width: 1.1; stroke-dasharray: 3 4; }
 
-/* ---------- inspector: the same pages, emptied of all but the hidden ------
-   The pages on the right have exactly the proportions and spacing of those on
-   the left (same 28px at the top, same 26px between pages): a reading position
-   transposes as-is, and an item reads at its real place. What belongs to no
-   page lives in the #insRail column. */
-#inspector {
-  position: relative;
-  overflow: auto; border-left: 1px solid var(--line);
-  background: var(--bg);
-  padding: 28px 16px 60px;   /* same as #stage: same pages, same place */
-}
-/* The column of page-less traces (metadata, bookmarks, scripts…) sits at the
-   far left rather than inside the inspector: the two page panes then share
-   exactly the same width, and a page on the right matches the one on the
-   left. */
-#insRail {
-  flex: 0 0 236px; overflow-y: auto;
-  background: var(--paper); border-right: 1px solid var(--line);
-  padding: 14px 14px 40px;
-}
-#insRail:empty, #workspace.no-doc #insRail, .view-pages #insRail { display: none; }
-#insPages { width: max-content; min-width: 100%; display: flex; flex-direction: column; align-items: center; gap: 26px; }
-.ins-rail-head { display: flex; align-items: baseline; gap: 8px; margin: 12px 0 2px; }
-.ins-rail-head h2 { font-family: var(--font-display); font-size: 15px; font-weight: 600; margin: 0; }
-.ins-empty { color: var(--ink-faint); font-size: 13px; text-align: center; margin: 48px 0; }
-
-.ins-page {
-  position: relative;
-  width: calc(var(--page-w) * var(--zoom));
-  background: var(--paper);
-  border: 1px solid var(--paper-edge);
-  box-shadow: 0 2px 5px #0001, 0 10px 28px #0000000d;
-}
-.ins-page-layer { position: absolute; inset: 0; width: 100%; height: 100%; }
-.ins-page-tab {
-  position: absolute; top: 10px; left: -1px;
-  font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-soft);
-  background: var(--paper); border: 1px solid var(--paper-edge); border-left: none;
-  padding: 2px 7px; border-radius: 0 5px 5px 0;
-}
-/* page summary: placed under its edge, it does not change the page height and
-   so does not shift the synchronisation. */
-.ins-page-counts {
-  position: absolute; top: 100%; left: 0; right: 0;
-  font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-faint);
-  padding: 5px 2px; text-align: center;
-}
-.ins-page-note {
-  position: absolute; inset: auto 12% 12% 12%;
-  font-size: 12px; font-style: italic; color: var(--ink-faint); text-align: center;
-}
-.ins-page.is-page-deleted { border-color: var(--accent); background: #faf6f7; }
-.ins-page.is-page-deleted .ins-page-layer { opacity: .35; }
-
-/* the hidden layer, drawn at the exact place it occupies in the file */
-.ig-text { fill: var(--ink); font-family: var(--font-body); }
-.ig-text.is-hidden { fill: #a06a12; }
-.ig-text.is-gone { fill: var(--ink-faint); text-decoration: line-through; }
-.ig-box { fill: none; stroke-width: 1; vector-effect: non-scaling-stroke; }
-.ig-annot { stroke: #8a5210; fill: #c58a2e; fill-opacity: .1; }
-.ig-widget { stroke: #6b4fa8; fill: #6b4fa8; fill-opacity: .08; }
-.ig-link { stroke: var(--teal); fill: var(--teal); fill-opacity: .07; }
-.ig-image { stroke: var(--ink-faint); stroke-dasharray: 3 3; }
-/* an opaque cover: loud on purpose, it is the one trace that looks like an
-   erasure on the left while removing nothing */
-.ig-cover { stroke: var(--accent); stroke-width: 1.6; fill: var(--accent); fill-opacity: .14; }
-/* text a reader recognises inside an image: faint while it is merely what the
-   page already shows, loud where a cover hides it and it stays readable anyway */
-.ig-ocr { stroke: var(--teal); stroke-width: .8; stroke-dasharray: 2 2; fill: none; }
-.ig-ocr.is-hidden {
-  stroke: var(--accent); stroke-width: 1.6; stroke-dasharray: none;
-  fill: var(--accent); fill-opacity: .18;
-}
-.ig-box.is-gone { stroke: #2f7a4d; fill: #2f7a4d; fill-opacity: .07; stroke-dasharray: 2 3; }
-.ig-item:hover .ig-box { stroke-width: 2; }
-.ig-zone { fill-opacity: .1; stroke-width: 1.2; vector-effect: non-scaling-stroke; stroke-dasharray: 4 3; }
-.ig-zone-delete { fill: var(--accent); stroke: var(--accent); }
-.ig-zone-pixelate { fill: var(--teal); stroke: var(--teal); }
-
-.ins-legend { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--ink-soft); padding: 2px 0; }
-.ins-legend-mark { width: 13px; height: 9px; border-radius: 2px; flex: none; border: 1px solid; }
-.ig-legend-text { background: var(--ink); border-color: var(--ink); }
-.ig-legend-hidden { background: #a06a12; border-color: #8a5210; }
-.ig-legend-annot { background: #c58a2e33; border-color: #8a5210; }
-.ig-legend-zone { background: #7a2e3a1a; border-color: var(--accent); border-style: dashed; }
-.ig-legend-cover { background: #7a2e3a24; border-color: var(--accent); }
-.ig-legend-ocr { background: #2b5d6318; border-color: var(--teal); border-style: dashed; }
-.ig-legend-gone { background: #2f7a4d12; border-color: #2f7a4d; border-style: dashed; }
-
-.ins-summary {
-  padding: 11px 14px; border-radius: 9px; font-size: 12.5px; line-height: 1.5;
-  border: 1px solid var(--line); background: var(--paper);
-}
-.ins-summary strong { display: block; font-weight: 600; }
-.ins-summary span { color: var(--ink-soft); }
-.ins-summary.is-warn { border-color: #e0c089; background: #fdf6e9; }
-.ins-summary.is-warn strong { color: #8a5210; }
-.ins-summary.is-ok { border-color: #b9dcc6; background: #f0f8f2; }
-.ins-summary.is-ok strong { color: #2f7a4d; }
-
-.ins-sheet-sub { font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint); }
-
-.ins-sec { margin-top: 15px; }
-.ins-sec h3 {
-  display: flex; align-items: center; gap: 7px;
-  font-size: 10.5px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
-  color: var(--ink-faint); margin: 0 0 6px;
-}
-.ins-count {
-  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0;
-  background: #f1f3f0; color: var(--ink-soft); border-radius: 9px; padding: 1px 6px;
-}
-/* the one control the pane owns: it asks the server to read the images, or
-   hands over every cover at once. The pane still changes nothing by itself —
-   both end in ordinary zones on the left. */
-.ins-action {
-  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
-  margin: 6px 0 2px; padding: 5px 11px; border-radius: 7px;
-  color: var(--accent); background: var(--accent-soft); border: 1px solid #e3ccd2;
-}
-.ins-action:hover:not(:disabled) { background: #f0dde1; }
-.ins-action:disabled { cursor: default; opacity: .6; }
-
-/* what a cover hides, taken from the image itself: the claim, shown */
-.ins-reveal {
-  display: block; width: 100%; margin: 4px 0 8px; border-radius: 5px;
-  border: 1px solid var(--line); background: var(--paper);
-}
-
-.ins-none { font-size: 12px; color: var(--ink-faint); margin: 0; font-style: italic; }
-
-.ins-row {
-  display: grid; grid-template-columns: minmax(70px, 22%) 1fr auto;
-  gap: 10px; align-items: baseline;
-  padding: 5px 0; border-top: 1px solid #f0f2ef; font-size: 12.5px;
-}
-.ins-row:first-of-type { border-top: none; }
-.ins-label { color: var(--ink-faint); font-size: 11.5px; }
-.ins-value { color: var(--ink); overflow-wrap: anywhere; min-width: 0; }
-.ins-row.is-gone .ins-value { color: var(--ink-faint); text-decoration: line-through; }
-
-/* a row that does something when clicked (a cover: it hands you a zone) */
-.ins-row[role="button"]:hover { background: var(--accent-soft); }
-.ins-row[role="button"]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.ig-cover:hover .ig-box { fill-opacity: .26; }
-
-.ins-chip {
-  font-size: 10px; font-weight: 600; letter-spacing: .02em; white-space: nowrap;
-  border-radius: 20px; padding: 2px 8px; border: 1px solid transparent;
-}
-.ins-chip:empty { display: none; }
-.ins-chip-gone { color: #2f7a4d; background: #eef7f1; border-color: #cfe6d8; }
-.ins-chip-kept { color: #8a5210; background: #fdf4e6; border-color: #ecd6ad; }
-.ins-chip-partial { color: #8a5210; background: #fdf4e6; border-color: #ecd6ad; }
-
-/* narrow: stack the two views rather than squeezing them side by side, and move
-   the metadata column above the pages. */
-@media (max-width: 900px) {
-  #workspace.view-split { flex-direction: column; }
-  .view-split #stage, .view-split #inspector { flex: 1 1 50%; }
-  .view-split #inspector { border-left: none; border-top: 1px solid var(--line); }
-  #insRail { flex: none; max-height: 34vh; border-right: none; border-bottom: 1px solid var(--line); }
-}
-
 /* ---------- indeterminate progress bar ---------- */
 #busybar {
   flex: none; height: 3px; overflow: hidden; background: var(--accent-soft);
@@ -435,9 +260,9 @@ body.busy .page-layer { cursor: progress; }
 /* ---------- panning ---------- */
 /* Space held: the whole workspace becomes a hand, and the drawing layer stops
    claiming the pointer so a drag scrolls instead of drawing a zone. */
-body.pan-ready #stage, body.pan-ready #inspector { cursor: grab; }
+body.pan-ready #stage { cursor: grab; }
 body.pan-ready .page-layer { cursor: grab; pointer-events: none; }
-body.panning, body.panning #stage, body.panning #inspector, body.panning .page-layer { cursor: grabbing; }
+body.panning, body.panning #stage, body.panning .page-layer { cursor: grabbing; }
 
 /* ---------- status ---------- */
 #status {
@@ -504,8 +329,8 @@ body.picking .page-layer, body.picking .zone { cursor: crosshair; }
    neither to a screen reader nor to a mouse. The views never come back: of the
    three groups theirs are the icons that say it themselves — one page, two
    panes, lines — and their labels are the longest in the bar. */
-.tool-btn, .mode-btn, .view-btn { padding: 7px; gap: 0; }
-.tool-btn .lbl, .mode-btn .lbl, .view-btn .lbl { display: none; }
+.tool-btn, .mode-btn { padding: 7px; gap: 0; }
+.tool-btn .lbl, .mode-btn .lbl { display: none; }
 
 /* the modes hold out longest: a coloured dot on its own names nothing */
 @media (min-width: 1521px) {
@@ -574,7 +399,7 @@ body.login-page {
 }
 .login-submit { justify-content: center; margin-top: 4px; padding: 10px 14px; font-size: 14px; }
 
-/* same warning tone as the inspector's summary: one vocabulary for "careful" */
+/* same warning tone used elsewhere: one vocabulary for "careful" */
 .login-error {
   display: flex; align-items: flex-start; gap: 8px;
   margin: 0 0 18px; padding: 10px 12px; border-radius: 9px;

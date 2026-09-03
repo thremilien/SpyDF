@@ -84,27 +84,6 @@
 
   <div class="grow"></div>
 
-  <div class="btn-group" role="group" aria-label="View">
-    <button id="view-pages" aria-label="Document" class="btn view-btn" data-view="pages" title="Show the document only">
-      <svg viewBox="0 0 18 18" fill="none"><rect x="3.5" y="2.5" width="11" height="13" rx="1.2" stroke="currentColor" stroke-width="1.4"/></svg>
-      <span class="lbl">Document</span>
-    </button>
-    <button id="view-split" aria-label="Split view" class="btn view-btn active" data-view="split" title="Show the document and its hidden content">
-      <svg viewBox="0 0 18 18" fill="none"><rect x="2" y="2.5" width="6" height="13" rx="1.2" stroke="currentColor" stroke-width="1.4"/><rect x="10" y="2.5" width="6" height="13" rx="1.2" stroke="currentColor" stroke-width="1.4"/></svg>
-      <span class="lbl">Split view</span>
-    </button>
-    <button id="view-inspect" aria-label="Hidden content" class="btn view-btn" data-view="inspect" title="Show the hidden content only">
-      <svg viewBox="0 0 18 18" fill="none"><rect x="3.5" y="2.5" width="11" height="13" rx="1.2" stroke="currentColor" stroke-width="1.4"/><line x1="6" y1="6" x2="12" y2="6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><line x1="6" y1="9" x2="12" y2="9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><line x1="6" y1="12" x2="9.5" y2="12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
-      <span class="lbl">Hidden content</span>
-    </button>
-  </div>
-
-  <div class="sep"></div>
-
-  <label class="check" title="Metadata, XMP, bookmarks, attachments, JavaScript, links and form fields">
-    <input type="checkbox" id="meta" checked><span>Strip document traces</span>
-  </label>
-
   <label class="wm-field" for="wm">
     <span class="sr-only">Watermark to stamp on every exported page</span>
     <input type="text" id="wm" maxlength="80" placeholder="Watermark (optional)"
@@ -122,9 +101,7 @@
 
 <div id="busybar" hidden role="progressbar" aria-label="Processing"></div>
 
-<div id="workspace" class="view-split no-doc">
-  <div id="insRail" aria-label="What the document carries outside its pages"></div>
-
+<div id="workspace" class="no-doc">
   <div id="stage">
     <div id="drop" role="button" tabindex="0"
          aria-label="Open a PDF: click to choose a file, or drop one here">
@@ -134,12 +111,6 @@
     </div>
     <div id="pages" hidden></div>
   </div>
-
-  <aside id="inspector" aria-label="Hidden content of the document">
-    <div id="insPages">
-      <p class="ins-empty">Open a PDF to see what it carries without showing it.</p>
-    </div>
-  </aside>
 </div>
 <div id="status" role="status" aria-live="polite">No document.</div>
 
@@ -152,12 +123,13 @@
       <li>Drag a zone to move it, or its handles to resize it.</li>
       <li><b>Right-click</b> a zone to change its mode or delete it. <b>Ctrl+Z</b> undoes, <b>Ctrl+Y</b> redoes.</li>
       <li>From the keyboard: <b>Tab</b> moves between zones, <b>Enter</b> opens the zone menu, <b>Delete</b> removes it.</li>
-      <li><b>Ctrl+wheel</b> or <b>Ctrl</b> with <b>+</b> / <b>−</b> / <b>0</b> zooms; both views zoom together. Drag with the <b>middle button</b> or hold <b>Space</b> to move around, arrows and <b>Page Up/Down</b> too.</li>
+      <li><b>Ctrl+wheel</b> or <b>Ctrl</b> with <b>+</b> / <b>−</b> / <b>0</b> zooms the page. Drag with the <b>middle button</b> or hold <b>Space</b> to move around, arrows and <b>Page Up/Down</b> too.</li>
       <li>What disappears follows the <b>drawn outline</b>, polygons and freehand included: nothing outside it is erased or covered.</li>
       <li><b>Delete</b> erases the content; <b>Pixelate</b> leaves nothing but an unreadable mosaic.</li>
       <li>A delete zone is covered in the colour of the paper it was drawn on, averaged along its outline. Change it in the zone menu — three <b>RGB</b> numbers, or the <b>pipette</b> to take a colour from a click on the page.</li>
       <li>Reloading the page keeps the document and its zones: they are picked up again as long as the tab stays open and the document has not expired on the server.</li>
       <li>A <b>watermark</b> (typed in the field next to Export) is stamped diagonally across every exported page; a preview appears on the pages as you type.</li>
+      <li>Export renders every page flat and re-reads it: the result is an image of the document with a text layer put back by OCR, and carries nothing else — no metadata, no annotation, no hidden text.</li>
     </ul>
   </div>
 </div>
@@ -184,5 +156,4 @@
 </div>
 
 <script src="/static/app.js"></script>
-<script src="/static/inspector.js"></script>
 </body></html>

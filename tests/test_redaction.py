@@ -1,4 +1,11 @@
-"""Regression tests for the redaction path: every trace here once survived export."""
+"""Regression tests for the redaction path: every trace here once survived export.
+
+The export flattens every page to a bitmap and re-indexes it with OCR, so a
+class of leak that used to need a dedicated carrier (an annotation's author, a
+form field's value, the structure tree, metadata...) simply has nowhere left to
+be: rasterising the page is what removes it, for every export, whether or not a
+zone was drawn.
+"""
 
 import contextlib
 
@@ -6,7 +13,7 @@ import fitz
 import pytest
 from fastapi.testclient import TestClient
 
-from src.app import _shape_mask, _verify, app
+from src.app import app
 
 # Zone as drawn by the user, in PDF coordinates.
 ZONE = (50, 80, 260, 175)
@@ -27,7 +34,7 @@ SECRETS = [
     "XMPMARKERNU",  # XMP
 ]
 
-PUBLIC = "PUBLICTEXTBETA"  # outside the zone: must survive
+PUBLIC = "PUBLICTEXTBETA"  # outside the zone: must survive, on the page
 
 
 @pytest.fixture
@@ -109,15 +116,10 @@ def rect_points(rect):
     return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
 
 
-def export(client, sid, zones, deleted_pages=(), strip_meta=True):
+def export(client, sid, zones=None, deleted_pages=()):
     r = client.post(
         "/api/export",
-        json={
-            "sid": sid,
-            "zones": zones,
-            "deleted_pages": list(deleted_pages),
-            "strip_meta": strip_meta,
-        },
+        json={"sid": sid, "zones": zones or {}, "deleted_pages": list(deleted_pages)},
     )
     assert r.status_code == 200, r.text
     body = r.json()
@@ -130,60 +132,90 @@ def export(client, sid, zones, deleted_pages=(), strip_meta=True):
 
 
 def test_no_identifying_trace_survives_export(client):
+    """Flattening strips every trace, not only the one under a drawn zone."""
     sid = open_doc(client, build_pdf())
     zones = {"0": [{"type": "rect", "points": rect_points(ZONE), "mode": "delete"}]}
     body, out = export(client, sid, zones)
 
+    page_text = fitz.open(stream=out, filetype="pdf")[0].get_text()
+    survivors_text = [m for m in SECRETS if m in page_text]
+    haystack = every_byte(out)
+    survivors_bytes = [m for m in SECRETS if m.encode() in haystack]
+    assert not survivors_text, f"traces still in the text layer: {survivors_text}"
+    assert not survivors_bytes, f"traces still in the raw file: {survivors_bytes}"
+    assert body["ocr"] == "unavailable"  # the default fixture keeps recognition off
+
+
+def test_no_identifying_trace_survives_export_with_no_zone_at_all(client):
+    """Flattening alone strips the file: nothing needs to be drawn."""
+    sid = open_doc(client, build_pdf())
+    _, out = export(client, sid)
+
     haystack = every_byte(out)
     survivors = [m for m in SECRETS if m.encode() in haystack]
-    assert not survivors, f"traces encore presentes dans le PDF exporte: {survivors}"
+    assert not survivors, f"traces still in the file with no zone drawn: {survivors}"
 
 
-def test_export_reports_no_leak(client):
+def test_pixels_outside_the_zone_are_intact(client):
+    """The real guarantee with recognition off: nothing but the zone is painted."""
     sid = open_doc(client, build_pdf())
     zones = {"0": [{"type": "rect", "points": rect_points(ZONE), "mode": "delete"}]}
-    body, _ = export(client, sid, zones)
-    assert body["leak_count"] == 0, body["leaks"]
+    _, out = export(client, sid, zones)
+
+    # PUBLIC sits at (72, 400), well below the zone (which ends at y=175): its
+    # rendered pixels must be unaffected, even though it left no text layer of
+    # its own without OCR.
+    doc = fitz.open(stream=out, filetype="pdf")
+    try:
+        pm = doc[0].get_pixmap(clip=fitz.Rect(60, 385, 300, 415))
+    finally:
+        doc.close()
+    assert min(pm.samples) != max(pm.samples), "text outside the zone should still be visible"
 
 
-def test_content_outside_the_zone_is_kept(client):
+def test_public_text_survives_export_and_reads_back_with_ocr(client, real_ocr):
+    """With recognition on, text outside the zone comes back in the text layer."""
+    sid = open_doc(client, build_pdf())
+    zones = {"0": [{"type": "rect", "points": rect_points(ZONE), "mode": "delete"}]}
+    body, out = export(client, sid, zones)
+    assert body["ocr"] in ("ok", "partial")
+
+    doc = fitz.open(stream=out, filetype="pdf")
+    try:
+        text = doc[0].get_text().upper()
+    finally:
+        doc.close()
+    # robust to OCR noise: a close reading of PUBLIC is enough
+    assert "PUBLICTEXTBET" in text or "UBLICTEXTBETA" in text
+
+
+def test_line_art_crossing_the_zone_edge_is_partly_removed(client):
+    """The stroke running past the zone edge survives outside it and disappears
+    inside it: flattening paints the zone straight into the pixels it covers."""
     sid = open_doc(client, build_pdf())
     zones = {"0": [{"type": "rect", "points": rect_points(ZONE), "mode": "delete"}]}
     _, out = export(client, sid, zones)
 
     doc = fitz.open(stream=out, filetype="pdf")
     try:
-        assert PUBLIC in doc[0].get_text()
+        # right of the zone, at the height of the lines: still drawn
+        beyond = doc[0].get_pixmap(clip=fitz.Rect(ZONE[2] + 5, 145, 400, 165))
+        # inside the zone, at the same height: gone (painted over)
+        inside = doc[0].get_pixmap(clip=fitz.Rect(ZONE[0] + 5, 145, ZONE[2] - 5, 165))
     finally:
         doc.close()
-
-
-def test_line_art_crossing_the_zone_edge_is_removed(client):
-    """PyMuPDF's default (REMOVE_IF_COVERED) left any stroke running past the
-    zone intact, whole under the white cover."""
-    sid = open_doc(client, build_pdf())
-    zones = {"0": [{"type": "rect", "points": rect_points(ZONE), "mode": "delete"}]}
-    _, out = export(client, sid, zones)
-
-    doc = fitz.open(stream=out, filetype="pdf")
-    try:
-        # right of the zone, at the height of the lines: no drawing left
-        beyond = fitz.Rect(ZONE[2] + 5, 140, 400, 170)
-        strays = [d for d in doc[0].get_drawings() if d["rect"].intersects(beyond)]
-        assert not strays, f"trace vectoriel survivant: {strays}"
-    finally:
-        doc.close()
+    assert min(beyond.samples) != max(beyond.samples), "line art beyond the zone should survive"
+    assert min(inside.samples) == max(inside.samples), "line art inside the zone should be gone"
 
 
 def test_pixelate_destroys_the_source_text(client):
     """The mosaic is a real downsample: the original text must not survive under
-    the image."""
+    the image, in text layer or in the raw bytes."""
     sid = open_doc(client, build_pdf())
     zones = {"0": [{"type": "rect", "points": rect_points(ZONE), "mode": "pixelate"}]}
-    body, out = export(client, sid, zones)
+    _, out = export(client, sid, zones)
 
     assert b"SECRETNAMEALPHA" not in every_byte(out)
-    assert body["leak_count"] == 0, body["leaks"]
 
 
 # A triangle, wide at the top and pointed at the bottom: its bounding box juts
@@ -203,18 +235,15 @@ def test_non_rectangular_zone_follows_its_outline(client):
 
     sid = open_doc(client, data)
     zones = {"0": [{"type": "polygon", "points": TRIANGLE, "mode": "delete"}]}
-    body, out = export(client, sid, zones)
+    _, out = export(client, sid, zones)
 
     haystack = every_byte(out)
     assert b"INSIDETRIANGLE" not in haystack
-    assert b"OUTSIDE" in haystack
-    assert body["leak_count"] == 0, body["leaks"]
 
 
 def test_polygon_on_a_scan_does_not_whiten_its_bounding_box(client):
-    """The case that made the bounding box unacceptable: on an image page,
-    PDF_REDACT_IMAGE_PIXELS whitened the whole box under a cover that itself
-    followed the outline."""
+    """The case that made the bounding box unacceptable: a cover must follow the
+    outline, not square off over the whole zone."""
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
     grey = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 300, 400), False)
@@ -229,30 +258,16 @@ def test_polygon_on_a_scan_does_not_whiten_its_bounding_box(client):
 
     chk = fitz.open(stream=out, filetype="pdf")
     try:
-        pm = chk[0].get_pixmap()  # page A4 rendue a l'echelle 1
-        # (70, 130): inside the bounding box, outside the triangle
-        assert pm.pixel(70, 130) == (90, 90, 90)
-        # (230, 80): squarely inside the triangle
-        assert pm.pixel(230, 80) == (255, 255, 255)
+        pm = chk[0].get_pixmap()
+        # (70, 130): inside the bounding box, outside the triangle -- close to
+        # the source grey, allowing for JPEG re-encoding
+        px = pm.pixel(70, 130)
+        assert all(abs(c - 90) < 20 for c in px), px
+        # (230, 80): squarely inside the triangle -- painted over (default white)
+        px = pm.pixel(230, 80)
+        assert all(c > 230 for c in px), px
     finally:
         chk.close()
-
-
-def test_pixelated_polygon_mosaic_stays_inside_the_outline():
-    """The mosaic is captured over the bounding box: its alpha mask is what keeps
-    it from covering the edges."""
-    points = [fitz.Point(*p) for p in TRIANGLE]
-    rect = fitz.Rect(60, 60, 400, 140)
-    mask = _shape_mask(points, rect)
-
-    def at(x, y):
-        i = int((x - rect.x0) / rect.width * mask.width)
-        j = int((y - rect.y0) / rect.height * mask.height)
-        return mask.pixel(i, j)[0]
-
-    assert at(230, 70) == 255  # dans le triangle: la mosaique s'affiche
-    assert at(70, 130) == 0  # dans le rectangle, hors du triangle: transparent
-    assert at(390, 130) == 0
 
 
 def test_pixelated_polygon_on_a_scan_keeps_the_outside_intact(client):
@@ -272,7 +287,8 @@ def test_pixelated_polygon_on_a_scan_keeps_the_outside_intact(client):
     assert b"SECRETNAMEALPHA" not in every_byte(out)
     chk = fitz.open(stream=out, filetype="pdf")
     try:
-        assert chk[0].get_pixmap().pixel(70, 130) == (90, 90, 90)
+        px = chk[0].get_pixmap().pixel(70, 130)
+        assert all(abs(c - 90) < 20 for c in px), px
     finally:
         chk.close()
 
@@ -292,17 +308,16 @@ def test_deleted_page_is_gone_and_zones_still_map(client):
     zones = {"2": [{"type": "rect", "points": rect_points((50, 80, 300, 120)), "mode": "delete"}]}
     body, out = export(client, sid, zones, deleted_pages=[0])
 
-    assert body["leak_count"] == 0, body["leaks"]
     haystack = every_byte(out)
     assert b"PAGEMARKER0" not in haystack  # page supprimee
     assert b"PAGEMARKER2" not in haystack  # page 2 redigee (devenue page 1)
-    assert b"PAGEMARKER1" in haystack  # page intacte
 
     chk = fitz.open(stream=out, filetype="pdf")
     try:
         assert chk.page_count == 2
     finally:
         chk.close()
+    assert body["pages"] == 2
 
 
 def test_cannot_delete_every_page(client):
@@ -313,63 +328,6 @@ def test_cannot_delete_every_page(client):
     sid = open_doc(client, data)
     r = client.post("/api/export", json={"sid": sid, "zones": {}, "deleted_pages": [0]})
     assert r.status_code == 400
-
-
-# ---------------------------------------------------------------- verification
-
-
-def _zone(rect):
-    """A zone as /api/export prepares it: its outline, and the rectangles really
-    redacted — one here, the zone being rectangular."""
-    return {"rect": rect, "rects": [rect]}
-
-
-def _doc_with_survivors() -> bytes:
-    """A PDF where text, annotation and field all sit in the zone: exactly what a
-    failed export would produce."""
-    doc = fitz.open()
-    page = doc.new_page(width=595, height=842)
-    page.insert_text((72, 100), "STILLHERE", fontsize=14)
-    annot = page.add_text_annot(fitz.Point(100, 110), "reste")
-    annot.set_info(title="AUTEURRESTANT", content="reste")
-    annot.update()
-    widget = fitz.Widget()
-    widget.rect = fitz.Rect(150, 90, 250, 115)
-    widget.field_name = "CHAMPRESTANT"
-    widget.field_value = "v"
-    widget.field_type = fitz.PDF_WIDGET_TYPE_TEXT
-    page.add_widget(widget)
-    out = doc.tobytes()
-    doc.close()
-    return out
-
-
-def test_verify_catches_text_annotations_and_fields():
-    """The check runs on the exported bytes and reports all three families of
-    residue, not just text."""
-    zone = _zone(fitz.Rect(50, 80, 300, 140))
-    leaks = _verify(_doc_with_survivors(), {0: [zone]}, {0: 0})
-
-    kinds = {lk["kind"] for lk in leaks}
-    assert kinds == {"text", "annotation", "field"}, leaks
-    # get_text("words") can weld the word to the neighbouring field value
-    texts = " ".join(lk["text"] for lk in leaks)
-    assert "STILLHERE" in texts
-    assert "AUTEURRESTANT" in texts
-    assert "CHAMPRESTANT" in texts
-    assert all(lk["page"] == 1 for lk in leaks)
-
-
-def test_verify_reports_the_page_number_of_the_exported_file():
-    """Zones are indexed on the source document; after deleting pages, a leak
-    must be reported at its number in the produced file."""
-    zone = _zone(fitz.Rect(50, 80, 300, 140))
-    # zone on original page 4, which becomes page 1 (index 0) in the export
-    leaks = _verify(_doc_with_survivors(), {3: [zone]}, {3: 0})
-    assert leaks and all(lk["page"] == 1 for lk in leaks)
-
-    # page gone from the exported document: nothing to check, and no crash
-    assert _verify(_doc_with_survivors(), {3: [zone]}, {}) == []
 
 
 # ---------------------------------------------------------------- web
@@ -414,14 +372,17 @@ def test_an_expired_session_cannot_be_picked_up(client):
     assert client.get("/api/session/deadbeef").status_code == 404
 
 
-def test_export_without_zones_is_refused(client):
+def test_export_with_no_zone_no_deletion_and_no_watermark_now_succeeds(client):
+    """Flattening alone strips the file: this is no longer a no-op refused."""
     doc = fitz.open()
     doc.new_page()
     data = doc.tobytes()
     doc.close()
     sid = open_doc(client, data)
     r = client.post("/api/export", json={"sid": sid, "zones": {}, "deleted_pages": []})
-    assert r.status_code == 400
+    assert r.status_code == 200
+    body = r.json()
+    assert body["pages"] == 1
 
 
 def test_download_headers_are_safe(client):
@@ -467,6 +428,14 @@ def cover_pixel(data: bytes, point=(150, 110)) -> tuple:
     return px
 
 
+def assert_close(actual: tuple, expected: tuple, tol: int = 3) -> None:
+    """Compare a sampled pixel to an expected colour, allowing for JPEG re-encoding."""
+    assert all(abs(a - e) <= tol for a, e in zip(actual, expected, strict=True)), (
+        actual,
+        expected,
+    )
+
+
 def export_zone(client, data: bytes, color=None) -> bytes:
     zone = {"type": "rect", "points": rect_points((40, 100, 260, 130))}
     if color is not None:
@@ -474,7 +443,7 @@ def export_zone(client, data: bytes, color=None) -> bytes:
     sid = open_doc(client, data)
     r = client.post(
         "/api/export",
-        json={"sid": sid, "zones": {"0": [zone]}, "strip_meta": True, "deleted_pages": []},
+        json={"sid": sid, "zones": {"0": [zone]}, "deleted_pages": []},
     )
     assert r.status_code == 200, r.text
     return client.get(r.json()["download"]).content
@@ -484,19 +453,19 @@ def test_zone_cover_takes_the_colour_it_is_given(client):
     """A white patch on coloured paper says "something was here": the cover is
     painted in the colour the client sampled from the page."""
     out = export_zone(client, colored_page(), color=[229, 244, 198])
-    assert cover_pixel(out) == (229, 244, 198)
+    assert_close(cover_pixel(out), (229, 244, 198))
     assert b"SECRETNAMEALPHA" not in every_byte(out)
 
 
 def test_zone_cover_stays_white_without_a_colour(client):
     """Older clients, and anything unusable, keep the original behaviour."""
     data = colored_page()
-    assert cover_pixel(export_zone(client, data)) == (255, 255, 255)
-    assert cover_pixel(export_zone(client, data, color="green")) == (255, 255, 255)
-    assert cover_pixel(export_zone(client, data, color=[1, 2])) == (255, 255, 255)
+    assert_close(cover_pixel(export_zone(client, data)), (255, 255, 255))
+    assert_close(cover_pixel(export_zone(client, data, color="green")), (255, 255, 255))
+    assert_close(cover_pixel(export_zone(client, data, color=[1, 2])), (255, 255, 255))
 
 
 def test_zone_colour_channels_are_clamped(client):
     """Out-of-range channels must not raise, nor wrap around."""
     out = export_zone(client, colored_page(), color=[-40, 300, 128])
-    assert cover_pixel(out) == (0, 255, 128)
+    assert_close(cover_pixel(out), (0, 255, 128))

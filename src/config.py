@@ -107,45 +107,30 @@ MIN_ZOOM = env_float("SPYDF_MIN_ZOOM", 1.5)
 MAX_ZOOM = env_float("SPYDF_MAX_ZOOM", 8.0)  # memory guard rail: 8x on A4 = ~128 Mpx
 
 # ---------- redaction ----------
+# A zone is painted straight into the page bitmap, so how coarse a mosaic is
+# has become the only knob: nothing about strips or masks is left, a raster
+# being filled row by row, exactly along the drawn outline.
 MOSAIC_BLOCKS = env_int("SPYDF_MOSAIC_BLOCKS", 14)  # pixelated zone width, in "big pixels"
-STRIP_HEIGHT = env_float("SPYDF_STRIP_HEIGHT", 2.0)  # one redaction strip, in PDF points
-MAX_STRIPS = env_int("SPYDF_MAX_STRIPS", 200)  # a tall zone must not yield a thousand rects
-MASK_MAX_PX = env_int("SPYDF_MASK_MAX_PX", 240)  # mask clipping a mosaic to the outline
-LEAK_COVERAGE = env_float("SPYDF_LEAK_COVERAGE", 0.15)  # word coverage above which it leaks
-# JPEG quality used to re-encode the images apply_redactions rewrote losslessly;
-# 0 disables it and keeps the (much heavier) lossless output.
-RECOMPRESS_QUALITY = env_int("SPYDF_RECOMPRESS_QUALITY", 80)
+
+# ---------- export ----------
+# Every page is rendered flat before it is written back, which is what makes an
+# export carry nothing but its pixels. The resolution is therefore the quality
+# of the exported document, and the input to the OCR that re-indexes it: 200 dpi
+# puts an A4 at about 1654 x 2339, legible and readable by the engine.
+EXPORT_DPI = env_int("SPYDF_EXPORT_DPI", 200)
+# JPEG quality of the flattened pages; 0 keeps them lossless, which multiplies
+# the size of a scan by five or six.
+EXPORT_JPEG_QUALITY = env_int("SPYDF_EXPORT_JPEG_QUALITY", 80)
 
 # ---------- OCR ----------
-# Reading the images the way Chrome does (src/ocr.py). Longest side an image is
-# shrunk to before recognition: full scan resolution costs a lot and buys
-# nothing, the text is just as legible halved.
-OCR_MAX_SIDE = env_int("SPYDF_OCR_MAX_SIDE", 1600)
+# The export reads back the pages it has just flattened and lays the recognised
+# text over them as invisible ink, so the result stays searchable. Longest side
+# a page bitmap is shrunk to before recognition: above this the engine costs a
+# lot and reads no better.
+OCR_MAX_SIDE = env_int("SPYDF_OCR_MAX_SIDE", 2400)
 OCR_MIN_SCORE = env_float("SPYDF_OCR_MIN_SCORE", 0.5)  # below this it is noise, not text
-OCR_MAX_IMAGES = env_int("SPYDF_OCR_MAX_IMAGES", 200)  # guard rail on a very long document
+OCR_MAX_PAGES = env_int("SPYDF_OCR_MAX_PAGES", 100)  # guard rail on a very long document
 OCR_SNIPPET = env_int("SPYDF_OCR_SNIPPET", 200)  # one fragment is a line, never a page
-# Higher than LEAK_COVERAGE, and for a reason: recognition returns whole lines,
-# not words, so a heading the zone's edge merely clips still overlaps it by a
-# fifth. A fragment that really survived inside a zone is covered almost
-# entirely. Between the two, anything from a third to a half would do.
-OCR_LEAK_COVERAGE = env_float("SPYDF_OCR_LEAK_COVERAGE", 0.6)
-# Opaque paint is only a cover when what it hides carries something: a patch
-# over blank paper hides nothing, and reporting it would flag every design.
-COVER_INK_DELTA = env_int("SPYDF_COVER_INK_DELTA", 48)  # channel distance counting as ink
-COVER_INK_RATIO = env_float("SPYDF_COVER_INK_RATIO", 0.005)  # of the area, before it counts
-COVER_PROBE_PX = env_int("SPYDF_COVER_PROBE_PX", 128)  # size the hidden area is probed at
-REVEAL_WIDTH = env_int("SPYDF_REVEAL_WIDTH", 900)  # px wide the hidden area is shown at
-REVEAL_MAX_ZOOM = env_float("SPYDF_REVEAL_MAX_ZOOM", 8.0)
-
-
-def ocr_verify() -> bool:
-    """Whether the export re-reads its own images to check nothing legible survives.
-
-    On by default, unlike most flags here: on an image-only document the
-    text-based check has nothing to look at, so turning this off exports a scan
-    verified by nothing at all.
-    """
-    return env_str("SPYDF_OCR_VERIFY", "1").lower() not in {"0", "false", "no", "off"}
 
 
 # ---------- watermark ----------

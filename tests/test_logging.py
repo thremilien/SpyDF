@@ -8,10 +8,9 @@ import fitz
 import pytest
 from fastapi.testclient import TestClient
 
-import src.app as app_module
 import src.logs as logs_module
 from src.app import app
-from tests.test_redaction import ZONE, build_pdf, open_doc, rect_points
+from tests.test_redaction import build_pdf, open_doc, rect_points
 
 LOGGER_NAME = "spydf"
 
@@ -109,30 +108,34 @@ def test_rejected_upload_logs_a_warning(client, caplog):
 # ---------------------------------------------------------------- export
 
 
-def test_export_logs_leak_count_never_leak_text(client, caplog, monkeypatch):
-    """A leak is a word taken literally from the document the operator was
-    erasing: the log must carry its count, never the word.
+def test_export_logs_counts_and_status_never_leak_or_content(client, caplog):
+    """The export log line carries how much was flattened and indexed — counts
+    and a status word — never a scrap of the document's own content.
 
-    The leak is forced by substituting `_verify`; redaction fidelity itself is
-    already covered by tests/test_redaction.py, only the log matters here.
+    With the OCR engine off (the default fixture), `ocr=unavailable` and
+    `fragments=0`; this is still the guarantee under test: no field here can
+    ever leak a word taken from the file.
     """
-    leak_marker = "LEAKEDSECRETXYZ"
-    fake_leaks = [
-        {"page": 1, "kind": "text", "text": leak_marker},
-        {"page": 1, "kind": "text", "text": leak_marker + "2"},
-    ]
-    monkeypatch.setattr(app_module, "_verify", lambda *a, **k: fake_leaks)
-
     caplog.set_level(logging.INFO, logger=LOGGER_NAME)
     sid = open_doc(client, build_pdf())
-    zones = {"0": [{"type": "rect", "points": rect_points(ZONE), "mode": "delete"}]}
+    zones = {"0": [{"type": "rect", "points": rect_points((50, 80, 260, 175)), "mode": "delete"}]}
     r = client.post("/api/export", json={"sid": sid, "zones": zones, "deleted_pages": []})
     assert r.status_code == 200
-    assert r.json()["leak_count"] == 2
+    body = r.json()
+    assert body["ocr"] == "unavailable"
 
-    text = "\n".join(lk.message for lk in caplog.records)
-    assert "leaks=2" in text
-    assert leak_marker not in text
+    exports = [lk.message for lk in caplog.records if lk.message.startswith("event=export ")]
+    assert len(exports) == 1
+    line = exports[0]
+    assert "leaks=" not in line
+    assert "strip_meta=" not in line
+    assert f"ocr={body['ocr']}" in line
+    assert f"fragments={body['fragments']}" in line
+    assert "dpi=" in line
+    assert "out_bytes=" in line
+    # never the document's own content
+    assert "SECRETNAMEALPHA" not in line
+    assert "PUBLICTEXTBETA" not in line
 
 
 def test_export_with_watermark_logs_flag_never_text(client, caplog):
@@ -141,7 +144,7 @@ def test_export_with_watermark_logs_flag_never_text(client, caplog):
     watermark_text = "MARQUEURFILIGRANE"
     caplog.set_level(logging.INFO, logger=LOGGER_NAME)
     sid = open_doc(client, build_pdf())
-    zones = {"0": [{"type": "rect", "points": rect_points(ZONE), "mode": "delete"}]}
+    zones = {"0": [{"type": "rect", "points": rect_points((50, 80, 260, 175)), "mode": "delete"}]}
     r = client.post(
         "/api/export",
         json={
@@ -163,13 +166,12 @@ def test_export_success_event_is_logged(client, caplog):
     refusals."""
     caplog.set_level(logging.INFO, logger=LOGGER_NAME)
     sid = open_doc(client, build_pdf())
-    zones = {"0": [{"type": "rect", "points": rect_points(ZONE), "mode": "delete"}]}
+    zones = {"0": [{"type": "rect", "points": rect_points((50, 80, 260, 175)), "mode": "delete"}]}
     r = client.post("/api/export", json={"sid": sid, "zones": zones, "deleted_pages": []})
     assert r.status_code == 200
 
     exports = [lk.message for lk in caplog.records if lk.message.startswith("event=export ")]
     assert len(exports) == 1
-    assert "strip_meta=true" in exports[0]
     assert "out_bytes=" in exports[0]
 
 
@@ -184,22 +186,18 @@ def test_export_refusals_are_logged_at_warning(client, caplog):
     sid = open_doc(client, doc.tobytes())
     doc.close()
 
-    r = client.post("/api/export", json={"sid": sid, "zones": {}, "deleted_pages": []})
-    assert r.status_code == 400
-
     r = client.post("/api/export", json={"sid": sid, "zones": {}, "deleted_pages": [0]})
     assert r.status_code == 400
 
     warnings = [lk.message for lk in caplog.records if lk.levelno == logging.WARNING]
     assert any("reason=unknown_session" in m for m in warnings)
-    assert any("reason=nothing_to_do" in m for m in warnings)
     assert any("reason=all_pages_deleted" in m for m in warnings)
 
 
 def test_full_session_id_never_logged_only_a_prefix(client, caplog):
     caplog.set_level(logging.INFO, logger=LOGGER_NAME)
     sid = open_doc(client, build_pdf())
-    zones = {"0": [{"type": "rect", "points": rect_points(ZONE), "mode": "delete"}]}
+    zones = {"0": [{"type": "rect", "points": rect_points((50, 80, 260, 175)), "mode": "delete"}]}
     r = client.post("/api/export", json={"sid": sid, "zones": zones, "deleted_pages": []})
     assert r.status_code == 200
 

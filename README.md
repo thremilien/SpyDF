@@ -1,11 +1,13 @@
 # SpyDF
 
 Local webapp to redact PDF exams: draw zones over regions to remove (names,
-student IDs, ...), and export a PDF where the underlying text, image and
-vector objects are actually deleted — not just covered by a drawn box.
-Everything runs locally and in memory; nothing is uploaded anywhere.
+student IDs, ...), and export a document whose pages have been rendered flat to
+an image, with those zones painted into the pixels and the rest read back by OCR
+so it stays searchable. What is not visible on a page is not in the export —
+there is no object left in the file to carry it. Everything runs locally and in
+memory; nothing is uploaded anywhere.
 
-![The document on the left, what it hides on the right](docs/screenshot.png)
+![The document, with a zone drawn over a name](docs/screenshot.png)
 
 ## Install
 
@@ -46,31 +48,27 @@ the drop zone to pick one — mark the zones, then export.
 Three shapes: **rectangle**, **polygon** (click the vertices, double-click to
 close) and **freehand**. Drag a zone to move it, its handles to resize it.
 
-What disappears follows the **outline you drew**, whatever its shape. PyMuPDF
-can only redact rectangles, so a polygon or freehand zone is cut into thin
-horizontal strips that hug the outline, and each strip is redacted. Strips
-overshoot the outline by at most one strip height (measured: 1.25 pt, under
-half a millimetre) — over-deleting a little is acceptable, leaving content
-alive inside the shape is not. That matters most on a scan, where the page is
-a single image: redacting the bounding box would destroy its pixels and turn
-the whole box white under a cover that followed the outline.
+What disappears follows the **outline you drew**, whatever its shape. The page
+is a bitmap by the time a zone is applied, so the outline is cut at each row of
+pixels and only the runs inside it are filled — a polygon or a freehand loop
+erases its own shape, to the pixel, and nothing around it. That matters most on
+a scan, where the page is one single image: filling the bounding box instead
+would leave a white rectangle announcing where something was.
 
 Each zone has a mode, switched from its right-click menu:
 
-- **Delete** — the content is removed and the area covered in white.
-- **Pixelate** — the area is replaced by a genuine downsample of itself,
-  an unreadable mosaic; the source objects are removed just the same.
+- **Delete** — the area is filled, and the pixels under it are gone.
+- **Pixelate** — the area is replaced by a genuine downsample of itself, an
+  unreadable mosaic taken before anything else is painted.
 
-The cover of a **delete** zone is painted in the colour of the paper it was
+The fill of a **delete** zone is painted in the colour of the paper it was
 drawn on: the average of the pixels its outline passes over — the outline, not
 the inside, which is the content about to go. On a coloured or greyish scan a
 white patch is itself a mark, it says where something was; matching the paper
 leaves nothing to notice. The zone's right-click menu holds that colour as
 three **RGB** numbers and a **pipette** that takes a colour from a click
 anywhere on the page. The pipette reads the rendered page, not the screen, so
-clicking on a zone samples the paper underneath rather than the cover on top.
-The redaction strips are filled in the same colour, so no white sliver shows
-around a non-rectangular zone.
+clicking on a zone samples the paper underneath rather than the fill on top.
 
 The closing double-click of the polygon is taken before the browser gets it: it
 would otherwise start a word selection on the nearest text — which a
@@ -84,9 +82,9 @@ everything and ask for the file again, although the document itself had never
 left the server: the page simply held the only copy of the session id, of the
 zones and of the page geometry.
 
-It now picks them back up. The zones, the deleted pages, the watermark and the
-scrubbing checkbox are kept in the tab's own storage, and the document is asked
-back from the server by its session id. If that session is gone — expired after
+It now picks them back up. The zones, the deleted pages and the watermark are
+kept in the tab's own storage, and the document is asked back from the server by
+its session id. If that session is gone — expired after
 `SPYDF_SESSION_TTL`, or the server was restarted — the marking goes with it and
 you land back on the drop zone, rather than drawing zones over nothing.
 
@@ -102,120 +100,61 @@ exported document entirely.
 
 `Ctrl` with the wheel, `Ctrl` and `+` / `−` / `0`, or the buttons in the
 toolbar, from 25% to 500%. Zooming under the cursor keeps the point under it
-still, and both views zoom together: the zoom is a single factor the two panes
-size their pages from, so a page on the right can never end up a different size
-from the one on the left.
+still.
 
 Once a page is wider than its pane, drag it with the **middle button** or hold
 **Space** and drag with the left one; the arrows, `Page Up`/`Page Down`,
-`Home` and `End` move around too. Panning one pane scrolls the other to the
-same place, horizontally included.
+`Home` and `End` move around too.
 
 Pages are re-rendered server-side at the new size once the zoom settles, so
 zooming in gives you more detail rather than a bigger blur.
 
-### Beyond the visible page
+### What the export actually is
 
-"Strip document traces" (on by default) also clears what redaction
-leaves untouched because it does not live in the page content: metadata, XMP,
-bookmarks (often the student's name), attachments, JavaScript, links, form
-responses, optional-content layer names, and the text a tagged PDF carries
-outside its pages (`/Alt`, `/ActualText`, `/E`). Annotations and form fields
-intersecting a zone are deleted explicitly.
+Every page is rendered to a bitmap, the zones are painted into that bitmap, and
+a new document is built holding those bitmaps and nothing else. The original
+document is never edited and never saved.
 
-It also empties the images themselves. A copy photographed with a phone, or
-scanned by a device that fills its fields, arrives with **Exif** inside the
-image stream: make, model, body serial number, the date, sometimes a GPS fix —
-and a **thumbnail**, which is a complete copy of the picture in miniature. That
-last one matters: redaction blanks pixels in the main image and does not touch
-the thumbnail, so an otherwise perfect export can ship a small picture of the
-page *before* anything was drawn over it. Redaction only rewrites the images a
-zone touches, and nothing else in a PDF toolchain looks inside an image stream,
-so this is the only step that reaches any of it.
+That single step is the whole guarantee. A raster has no text layer to leave a
+name in, no annotation keeping its author, no form field keeping its answer, no
+structure tree carrying `/Alt` or `/ActualText`, no attachment, no JavaScript,
+no bookmark ("Jean Dupont's copy"), no layer name, and no image stream — so no
+**Exif** either: no camera make and serial, no GPS fix, and no embedded
+thumbnail, which on a phone photograph is a complete small copy of the picture
+*before* anything was drawn on it. None of it is stripped, because none of it is
+ever carried across.
 
-The removal is a cut between the JPEG's marker segments: the pixels are never
-decoded and re-encoded, so the image loses no quality. What describes how the
-pixels are to be read — the JFIF density, the ICC colour profile, Adobe's colour
-transform — is kept, since dropping it would change how the image looks rather
-than who it identifies.
+It also settles the case this tool was built for. A white box drawn over a scan
+in a reader or a phone's markup tool hides nothing: the pixels are all still
+there, one object below. Here the zone is filled into the bitmap itself — the
+pixels stop existing, and there is no "under" left to look at.
 
-### The inspector pane
+The zone follows the outline you drew, not its bounding box: each row of pixels
+is filled only between the outline's own crossings, so a polygon or a freehand
+loop erases its shape and leaves everything around it untouched. A **pixelate**
+zone lays back a heavily downsampled copy of what was there, cut to the same
+outline.
 
-Opening a PDF in a reader only shows you a picture of it. The right-hand pane
-redraws each page at the exact size of the one on the left, empty except for
-what the file carries without showing it — each item at the position it really
-occupies, so the two panes read one on top of the other. Because the pages
-match, scrolling is synchronised both ways: whichever pane you scroll takes
-the lead and the other follows to the same page at the same height.
+### Re-indexing
 
-What has no position on any page (metadata, bookmarks, scripts…) lives in the
-column on the far left. Between them, the pane accounts for:
+A page of pixels is unsearchable, so the export reads each flattened page back
+with OCR and writes the recognised text over it as invisible ink: nothing
+changes on screen, but the words can be selected, searched and indexed where
+they are drawn.
 
-- the **indexed text layer** — what is selectable, copyable and searchable,
-  including any **invisible text** (an OCR layer under a scan, or text hidden
-  on purpose), which is highlighted because it leaks while showing nothing;
-- **metadata** and **XMP** — author, title, keywords, and the scanner or
-  application that produced the file;
-- **bookmarks**, often literally "Copie de <student name>";
-- **opaque covers** — a white box painted over a scan hides pixels without
-  removing one of them. Every renderer paints the box, so the area looks blank
-  here too and nothing invites you to draw a zone there, while the image still
-  carries the original: any OCR, "extract images" or object-delete gets it
-  back. A cover is found by paint order — opaque paint with something already
-  painted under it — so a *picture* used as a patch counts, which is what a
-  phone's markup tool produces, and paint over blank paper does not. The pane
-  outlines those areas in red, **shows you what each one hides**, taken from
-  the image itself, and counts them as *still there* until a zone covers one —
-  a zone does destroy the pixels underneath. "Redact all" hands you one zone
-  per cover, on every page;
-- **what the images say** — a picture of a page holds text that no text layer
-  knows about, and readers do read it. Chrome has OCR'd scanned PDFs since
-  version 126, and it does *not* read the page it shows you: it reads each
-  image object on its own, then lays the recognised text back over it so it can
-  be selected. A patch dropped on a scan is a separate object, so the OCR never
-  sees it — which is why a name under a white box can still be selected and
-  copied in the browser. This pane reads the images the same way and marks
-  every fragment that sits under a cover: hidden from you, readable by the next
-  person who opens the file. It costs seconds a page, so it is a button rather
-  than something you wait for;
-- **image metadata** — the Exif, XMP, IPTC and comments an image carries in its
-  own stream, one row per field: camera, serial number, date, GPS, thumbnail.
-  It is listed in the column rather than on the page because that is where it
-  lives: no zone reaches into an image stream, only the scrubbing does, and the
-  pane marks these on the checkbox alone rather than on the zones you drew;
-- **text carried outside the pages** — a tagged PDF describes a figure in
-  `/Alt`, stores the characters behind a glyph run in `/ActualText` and an
-  abbreviation's expansion in `/E`. Readers show and copy it, indexers index
-  it, and no zone can reach it: it is not page content. On a scan it is
-  regularly the only text a page has, so a page that reads as "image only"
-  everywhere else is not necessarily silent;
-- **annotations** with their author, **form fields** with their values,
-  **attachments**, **layers**, **links**, **fonts** and any **JavaScript**.
+The recognition only ever sees the bitmap **after** the zones are painted into
+it. It therefore cannot report what a zone hides — those pixels were gone before
+the engine looked. The status bar says how it went: every page indexed, only
+some of them (a very long document stops at `SPYDF_OCR_MAX_PAGES`), or none at
+all when no engine is installed, in which case the export is still produced,
+just as a plain image.
 
-Every item is marked *erased* or *kept* according to the zones you have
-drawn and the scrubbing checkbox, with a count of what would still leak, so
-you can see the result before exporting. Your zones are echoed onto the ghost
-pages, which is what makes a near-miss visible: text sitting just outside an
-outline stays black and counted. The pane is read-only.
-
-Three views from the toolbar: document only, both (default), hidden content
-only.
-
-### Verification
-
-After writing the file, the exporter re-opens **the exported bytes** and looks
-for text, annotations or form fields still inside a redacted zone. A word
-counts as a survivor once a redacted strip covers a real part of it, not when
-it merely grazes the outline. Any survivor is reported in the status bar, so a
-failed redaction is visible rather than silent.
-
-The text layer is not the whole check. A scan has none, so looking only for
-words would pass every image-only document without having verified anything —
-and that is the one kind of document where covering instead of deleting is the
-norm. So the zones are also read back the way a reader would read them, image
-by image. A fragment must lie almost entirely inside a zone to count, because
-recognition returns whole lines: a heading the zone's edge merely clips is not
-a leak, or every export would cry wolf.
+Two limits worth knowing. The exported text is only as good as the recognition,
+and its resolution is fixed at export time by `SPYDF_EXPORT_DPI` (200 by
+default) — a page is an image now, so zooming past that shows pixels rather than
+sharper letters. And the invisible layer is written in a base-14 font, which
+covers Latin-1: a fragment outside it is skipped rather than written as
+question marks.
 
 ### Keyboard
 
@@ -228,8 +167,10 @@ held with a drag move around a zoomed page.
 
 The field next to **Export** stamps a line of text diagonally across every
 exported page. A preview appears on the pages as you type, so you can see where
-it lands. It is applied *after* the leak check runs, so the watermark's own text
-can never be mistaken for — or mask — a leak.
+it lands. It is stamped *after* the pages are flattened, so it is the one thing
+in the exported file that is real text rather than pixels — and so it never ends
+up in the bitmap the recognition reads, where it would come back as a fragment
+of the document's own text.
 
 ### Signing in
 
@@ -257,31 +198,30 @@ log records the address and the outcome, never the submitted name or password.
 ```bash
 uv sync          # installs dev dependencies too
 uv run main.py
-uv run pytest    # regression tests for the redaction path
+uv run pytest    # regression tests for the export path
 uv run ruff check .    # lint
 uv run ruff format .   # format
 ```
 
-The tests build a PDF carrying one of each class of identifying trace, export
-it through the real routes, and assert none survives in the raw bytes or in
-any decompressed stream of the result. One of them builds an Exif block by hand
-— camera, serial, GPS, thumbnail — and checks both that the export removes it
-and that the image still decodes, pixel for pixel, afterwards.
+The tests build a PDF carrying one of each class of identifying trace — text,
+annotation and its author, form field and its value, bookmark, attachment, layer
+name, metadata, XMP — export it through the real routes, and assert none
+survives in the raw bytes of the result. Others work in pixels: a zone's area is
+really filled, a polygon does not square off into its bounding box, and what
+lies outside an outline is byte-for-byte what it was.
 
 ## Project layout
 
 - `main.py` — entry point
-- `src/app.py` — FastAPI routes (open/render/inspect/export/download)
+- `src/app.py` — FastAPI routes (open/render/export/download)
 - `src/config.py` — every tunable, read from the environment and `.env`
 - `src/auth.py` — the login: credentials, signed cookie, lockout
 - `src/logs.py` — the audit log (connection, import, export)
-- `src/probe.py` — read-only extraction of the document's invisible payload
-- `src/imagemeta.py` — the metadata carried inside an image, read and removed
-- `src/ocr.py` — the images read one at a time, the way Chrome reads them
+- `src/flatten.py` — the export: pages rendered flat, zones painted into them
+- `src/ocr.py` — the flattened page read back, its text laid over it invisibly
 - `src/server.py` — server bootstrap (opens browser, runs uvicorn)
 - `src/templates/index.html` — page shell
 - `src/static/app.js` — pages, zones, export
-- `src/static/inspector.js` — the inspector pane
 - `tests/` — regression tests
 
 ## Running it
@@ -379,11 +319,24 @@ app renders what the screen actually shows.
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `SPYDF_MOSAIC_BLOCKS` | `14` | width of a pixelated zone in "big pixels"; lower is coarser |
-| `SPYDF_STRIP_HEIGHT` | `2.0` | height of one redaction strip, in PDF points |
-| `SPYDF_MAX_STRIPS` | `200` | cap on the strips a single zone may produce |
-| `SPYDF_MASK_MAX_PX` | `240` | resolution of the mask clipping a mosaic to its outline |
-| `SPYDF_LEAK_COVERAGE` | `0.15` | share of a word inside a zone above which it is reported as a leak |
-| `SPYDF_RECOMPRESS_QUALITY` | `80` | JPEG quality for the images redaction rewrote losslessly; `0` keeps them lossless, and a scan then exports several times heavier than it came in |
+
+**Export** — the pages are flattened, so this is the quality of the result and
+of what the recognition is given to index it.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `SPYDF_EXPORT_DPI` | `200` | resolution the pages are rendered at; A4 becomes about 1654 x 2339 px |
+| `SPYDF_EXPORT_JPEG_QUALITY` | `80` | JPEG quality of the flattened pages; `0` keeps them lossless, five or six times heavier on a scan |
+
+**Re-indexing (OCR)** — optional: with no engine installed the export is still
+produced, without a text layer.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `SPYDF_OCR_MAX_SIDE` | `2400` | longest side a page bitmap is shrunk to before recognition |
+| `SPYDF_OCR_MIN_SCORE` | `0.5` | below this confidence a fragment is noise, not text |
+| `SPYDF_OCR_MAX_PAGES` | `100` | how many pages are read at most; beyond it the export reports itself partially indexed |
+| `SPYDF_OCR_SNIPPET` | `200` | longest fragment kept; one fragment is a line, never a page |
 
 **Watermark**
 
@@ -408,8 +361,9 @@ app renders what the screen actually shows.
 
 The log is written with the same care as the export. An uploaded file name is
 identifying — real ones look like `copie_jean_dupont.pdf` — so it is recorded
-only under `SPYDF_LOG_FILENAMES=1`. Leak text and watermark text are never
-logged at any setting: only the leak count, and whether a watermark was used.
+only under `SPYDF_LOG_FILENAMES=1`. Neither the watermark text nor a word of
+the document's own text is logged at any setting: only how many text fragments
+were written, and whether a watermark was used.
 A whole session id grants access to `/api/download/{key}`, so only its first
 few characters are logged.
 

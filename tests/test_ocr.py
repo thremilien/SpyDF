@@ -1,106 +1,124 @@
-"""Reading the images the way a reader does — cover or no cover."""
+"""Tests for src.ocr: reading a bitmap, and laying the result back as invisible ink."""
 
 import fitz
 import pytest
 
-from src.app import _verify
-from src.ocr import available, document_words, image_words, place
-from src.probe import _image_subrect
-
-pytestmark = pytest.mark.skipif(not available(), reason="no OCR engine installed")
-
-SECRET = "SECRETNAME"
-INK_AT = fitz.Rect(50, 380, 420, 450)
+import src.ocr as ocr
 
 
-def scan_bytes(text: str = SECRET) -> bytes:
-    """A picture of a page with something written on it, as a scan would be."""
+class _FakeEngine:
+    """A stand-in for RapidOCR: returns canned (box, text, score) triples."""
+
+    def __init__(self, results):
+        self.results = results
+        self.calls = 0
+
+    def __call__(self, _data):
+        self.calls += 1
+        return self.results, None
+
+
+def _not_flat_pixmap(width=100, height=50):
+    """A pixmap that is not one single colour, so `_readable` lets it through."""
+    pm = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, width, height), False)
+    pm.clear_with(255)
+    pm.set_rect(fitz.IRect(0, 0, 10, 10), (0, 0, 0))
+    return pm
+
+
+# ---------------------------------------------------------------- available()
+
+
+def test_available_is_false_without_an_engine():
+    """The default fixture (conftest._no_ocr) keeps recognition off."""
+    assert ocr.available() is False
+
+
+def test_available_reflects_a_real_engine(real_ocr):
+    assert ocr.available() is True
+
+
+# ---------------------------------------------------------------- bitmap_words()
+
+
+def test_bitmap_words_normalises_rects_and_filters_by_score(monkeypatch):
+    pm = _not_flat_pixmap()
+    results = [
+        ([[10, 10], [50, 10], [50, 30], [10, 30]], "hello", 0.9),
+        ([[60, 10], [90, 10], [90, 30], [60, 30]], "noise", 0.1),  # below OCR_MIN_SCORE
+    ]
+    monkeypatch.setattr(ocr, "_get_engine", lambda: _FakeEngine(results))
+
+    words = ocr.bitmap_words(pm)
+
+    assert len(words) == 1
+    w = words[0]
+    assert w["text"] == "hello"
+    assert w["score"] == 0.9
+    assert w["rect"] == pytest.approx([0.1, 0.2, 0.5, 0.6], abs=0.01)
+
+
+def test_a_flat_bitmap_reads_as_nothing(monkeypatch):
+    """A blank patch has nothing to recognise: recognition is never even run."""
+    pm = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 100, 50), False)
+    pm.clear_with(128)
+    fake = _FakeEngine([([[0, 0], [10, 0], [10, 10], [0, 10]], "should not be read", 0.99)])
+    monkeypatch.setattr(ocr, "_get_engine", lambda: fake)
+
+    assert ocr.bitmap_words(pm) == []
+    assert fake.calls == 0
+
+
+def test_bitmap_words_reads_real_text(real_ocr):
+    """The one test where recognition itself is under test."""
     doc = fitz.open()
-    page = doc.new_page()
-    page.insert_text((INK_AT.x0 + 12, INK_AT.y1 - 22), text, fontsize=34)
-    return page.get_pixmap(dpi=150, alpha=False).tobytes("png")
+    page = doc.new_page(width=400, height=200)
+    page.insert_text((20, 120), "SECRETNAME", fontsize=40)
+    pm = page.get_pixmap(dpi=150, alpha=False)
+    doc.close()
+
+    words = ocr.bitmap_words(pm)
+    text = " ".join(w["text"] for w in words).upper()
+    assert "SECRETNAM" in text
 
 
-def blank_bytes() -> bytes:
+# ---------------------------------------------------------------- write_layer()
+
+
+def test_write_layer_places_fragments_where_they_were_read():
     doc = fitz.open()
-    page = doc.new_page()
-    return page.get_pixmap(dpi=150, alpha=False).tobytes("png")
+    page = doc.new_page(width=200, height=100)
+    words = [{"text": "hello", "score": 0.9, "rect": [0.1, 0.2, 0.5, 0.6]}]
+
+    written = ocr.write_layer(page, words)
+
+    assert written == 1
+    found = [w for w in page.get_text("words") if w[4] == "hello"]
+    assert found
+    hit_rect = fitz.Rect(found[0][:4])
+    expected = fitz.Rect(0.1 * 200, 0.2 * 100, 0.5 * 200, 0.6 * 100)
+    assert hit_rect.intersects(expected)
 
 
-def covered_scan() -> bytes:
-    """The scan, with a white patch laid over the writing — the exam's shape."""
+def test_a_fragment_outside_latin1_is_skipped_not_substituted():
+    """Helvetica only encodes Latin-1: a CJK fragment must be dropped, not
+    written as a line of substitution glyphs."""
     doc = fitz.open()
-    page = doc.new_page()
-    page.insert_image(page.rect, stream=scan_bytes())
-    page.insert_image(INK_AT, stream=blank_bytes(), keep_proportion=False)
-    return doc.tobytes()
+    page = doc.new_page(width=200, height=100)
+    words = [{"text": "中文", "score": 0.9, "rect": [0.1, 0.2, 0.5, 0.6]}]
+
+    written = ocr.write_layer(page, words)
+
+    assert written == 0
+    assert page.get_text("words") == []
 
 
-def texts(payload) -> str:
-    return " ".join(w["text"] for p in payload["pages"] for w in p["words"]).upper()
-
-
-def test_reads_an_image_the_page_hides():
-    """The whole point: the patch is a separate object, so the OCR never sees it.
-
-    This is not a quirk being exploited — it is what Chrome does to every
-    scanned PDF it opens, and therefore what the file really exposes.
-    """
-    assert SECRET in texts(document_words(covered_scan()))
-
-
-def test_the_composed_page_shows_nothing_of_it():
-    """What the eye gets, for contrast: the rendered page is blank there."""
-    doc = fitz.open("pdf", covered_scan())
-    pm = doc[0].get_pixmap(clip=INK_AT, alpha=False)
-    assert min(pm.samples) == max(pm.samples)
-
-
-def test_words_land_where_the_image_is_drawn():
-    doc = fitz.open("pdf", covered_scan())
-    page = doc[0]
-    words = document_words(covered_scan())["pages"][0]["words"]
-    hit = [w for w in words if SECRET in w["text"].upper()]
-    assert hit
-    assert fitz.Rect(hit[0]["rect"]).intersects(INK_AT)
-    assert page.rect.contains(fitz.Rect(hit[0]["rect"]))
-
-
-def test_placing_and_unplacing_a_rectangle_agree():
-    """`ocr.place` and `probe._image_subrect` are inverses, and must stay so."""
+def test_write_layer_is_invisible():
     doc = fitz.open()
-    page = doc.new_page()
-    page.insert_image(fitz.Rect(100, 200, 400, 500), stream=scan_bytes())
-    page = fitz.open("pdf", doc.tobytes())[0]
-    info = page.get_image_info(xrefs=True)[0]
+    page = doc.new_page(width=200, height=100)
+    before = page.get_pixmap().samples
 
-    norm = (0.25, 0.4, 0.75, 0.6)
-    back = _image_subrect(fitz.Rect(place(norm, info, page)), info, page)
-    assert back == pytest.approx(norm, abs=0.01)
+    ocr.write_layer(page, [{"text": "hello", "score": 0.9, "rect": [0.1, 0.2, 0.5, 0.6]}])
 
-
-def test_a_flat_image_is_not_read():
-    """A blank patch has nothing to recognise: no engine call, no phantom word."""
-    doc = fitz.open()
-    page = doc.new_page()
-    page.insert_image(page.rect, stream=blank_bytes())
-    doc = fitz.open("pdf", doc.tobytes())
-    assert image_words(doc, doc[0].get_images(full=True)[0][0]) == []
-
-
-def test_export_check_catches_readable_pixels_left_in_a_zone():
-    """The safety net itself: a scan whose zone did not bite is reported.
-
-    Without this the text-based check would pass an image-only document in
-    silence, having looked at a text layer that does not exist.
-    """
-    zones = {0: [{"rects": [INK_AT]}]}
-    leaks = _verify(covered_scan(), zones, {0: 0})
-    assert any(lk["kind"] == "image text" and SECRET in lk["text"].upper() for lk in leaks)
-
-
-def test_export_check_ignores_what_the_zone_only_grazes():
-    """A heading the zone's edge clips is not a leak, or every export cries wolf."""
-    zones = {0: [{"rects": [fitz.Rect(INK_AT.x0, INK_AT.y1 - 6, INK_AT.x1, INK_AT.y1 + 60)]}]}
-    leaks = _verify(covered_scan(), zones, {0: 0})
-    assert not [lk for lk in leaks if lk["kind"] == "image text"]
+    after = page.get_pixmap().samples
+    assert before == after

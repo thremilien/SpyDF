@@ -17,13 +17,6 @@ const pageEls = [];
 
 const pagesEl = $('pages'), menu = $('zoneMenu');
 
-// Hooks for the inspector pane (inspector.js, loaded after this file). Defined
-// here as no-ops so the app still works on its own without it.
-let onDocumentOpened = () => {};
-let onZonesChanged = () => {};
-let onActivePageChanged = () => {};
-let onZoomChanged = () => {};
-
 const ICON_TRASH = '<svg viewBox="0 0 18 18" fill="none"><path d="M4 5.5h10M7.5 5.5V4a1 1 0 011-1h1a1 1 0 011 1v1.5M5.5 5.5l.6 8a1 1 0 001 .9h3.8a1 1 0 001-.9l.6-8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_RESTORE = '<svg viewBox="0 0 18 18" fill="none"><path d="M4 8h7a3.5 3.5 0 010 7H8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M6.5 5L4 8l2.5 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
@@ -159,10 +152,9 @@ async function openFile(f) {
   activePage = 0; selected = null; deletedPages = new Set();
   cancelPending();
   resetZoom();   // a new document starts at 100%
-  $('drop').hidden = true; pagesEl.hidden = false;
+  showDocument();
   setStatus(`Rendering page 1 of ${pages.length}…`, 'busy-text');
   buildPages();
-  onDocumentOpened(sid);
   awaitFirstPage();
 }
 
@@ -243,6 +235,15 @@ stageEl.addEventListener('drop', e => {
   if (f) openFile(f);
 });
 
+// From the drop zone to the document: the stage centres what it holds while
+// there is nothing to scroll, and must stop once a page is taller than it, or
+// the top of that page is centred out of reach.
+function showDocument() {
+  $('drop').hidden = true;
+  pagesEl.hidden = false;
+  $('workspace').classList.remove('no-doc');
+}
+
 // The drop zone opens the file picker too: it is the first thing you see, and
 // nothing on it pointed to the button in the top bar. It is hidden as soon as a
 // document is open.
@@ -301,7 +302,6 @@ function togglePageDeleted(i) {
   if (deletedPages.has(i)) deletedPages.delete(i); else deletedPages.add(i);
   if (selected && selected.page === i) { selected = null; closeMenu(); }
   syncDeletedUI(); renderZones(i); updateStatus();
-  onZonesChanged(i);
 }
 
 function syncDeletedUI() {
@@ -323,7 +323,6 @@ const activeObserver = new IntersectionObserver(entries => {
     if (en.isIntersecting && en.intersectionRatio >= 0.5) {
       activePage = +en.target.dataset.page;
       updateStatus();
-      onActivePageChanged(activePage);
     }
   });
 }, { threshold: [0.5] });
@@ -345,9 +344,9 @@ function loadPage(i) {
   pe.img.src = `/api/page/${sid}/${i}?w=${w}`;
 }
 
-// A pane resizes without the window doing so — switching view, or a document
-// opening and giving the inspector its half — so this watches the panes
-// themselves: the pages are re-laid out, then re-requested sharper.
+// The stage resizes without the window doing so — a document opening, for
+// instance — so this watches it directly: the pages are re-laid out, then
+// re-requested sharper.
 const paneResize = new ResizeObserver(() => {
   syncPageWidth();
   if (sid) scheduleSharpen();
@@ -505,7 +504,6 @@ function renderZones(i) {
   if (selEl && keyboardNav && !menu.contains(document.activeElement)) {
     selEl.focus({ preventScroll: true });
   }
-  onZonesChanged(i);
 }
 
 function select(i, idx) {
@@ -1029,11 +1027,9 @@ $('mode-delete').onclick = () => setDefaultMode('delete');
 $('mode-pixelate').onclick = () => setDefaultMode('pixelate');
 
 // ---------- zoom ----------
-// One factor for the whole workspace, not one per pane: both panes size their
-// pages from the same --page-w and --zoom, so they cannot drift apart. The two
-// views stay aligned page for page whatever the zoom, and the scroll
-// synchronisation below keeps working unchanged.
-const PAGE_MAX_W = 880;      // the width of a page at 100%, when the pane is wide enough
+// One factor for the whole stage: pages size themselves from --page-w and
+// --zoom, so scroll position and page size never drift apart.
+const PAGE_MAX_W = 880;      // the width of a page at 100%, when the stage is wide enough
 const PAGE_MIN_W = 120;
 const ZOOM_MIN = 0.25, ZOOM_MAX = 5;
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.8, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5];
@@ -1042,36 +1038,13 @@ const PAN_STEP = 60;         // arrow keys, in screen pixels
 const LINE_PX = 16, PAGE_PX = 400;   // wheel deltas reported in lines or pages
 
 let zoom = 1;
-let activePane = null;       // the pane the last pointer or scroll touched
-const inspectorEl = $('inspector');
 
-// The pages of a pane, in order. The inspector fills this in when it is loaded.
-let ghostEls = () => [];
-function elsOf(pane) {
-  return pane === inspectorEl ? ghostEls() : pageEls.map(pe => pe.container);
-}
-// The pane a keyboard zoom or pan acts on: the last one pointed at, unless the
-// current view has hidden it.
-function livePane() {
-  const p = activePane || stageEl;
-  return p.clientWidth ? p : (p === stageEl ? inspectorEl : stageEl);
-}
-
-// The base width of a page: as wide as the visible panes allow, capped. Set
-// from here rather than in CSS because a percentage would resolve against a
+// The base width of a page: as wide as the stage allows, capped. Set from
+// here rather than in CSS because a percentage would resolve against a
 // container that is itself sized by its pages once zoomed in.
-//
-// The narrower of the two panes wins, and both use it: a scrollbar on one side
-// only would otherwise make its pages overflow, and the two views would no
-// longer show a page at the same size.
-function paneInnerWidth(pane) {
-  if (!pane.clientWidth) return Infinity;   // hidden by the current view
-  const cs = getComputedStyle(pane);
-  return pane.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-}
-
 function syncPageWidth() {
-  const inner = Math.min(paneInnerWidth(stageEl), paneInnerWidth(inspectorEl));
+  const cs = getComputedStyle(stageEl);
+  const inner = stageEl.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
   const w = Math.min(PAGE_MAX_W, Math.max(PAGE_MIN_W, inner));
   document.documentElement.style.setProperty('--page-w', `${Math.round(w)}px`);
 }
@@ -1079,7 +1052,8 @@ function syncPageWidth() {
 // Zooming keeps one point still. That point is read as "page i, at fraction
 // (fx, fy) of it" — the same terms as the scroll synchronisation — then put
 // back under the same screen position once the pages have been resized.
-function anchorAt(els, cx, cy) {
+function anchorAt(cx, cy) {
+  const els = pageEls.map(pe => pe.container);
   for (let i = 0; i < els.length; i++) {
     if (!els[i]) continue;
     const r = els[i].getBoundingClientRect();
@@ -1093,28 +1067,26 @@ function anchorAt(els, cx, cy) {
   }
   return null;
 }
-function centerAnchor(pane) {
-  const r = pane.getBoundingClientRect();
-  return anchorAt(elsOf(pane), r.left + r.width / 2, r.top + r.height / 2);
+function centerAnchor() {
+  const r = stageEl.getBoundingClientRect();
+  return anchorAt(r.left + r.width / 2, r.top + r.height / 2);
 }
-function restoreAnchor(pane, a) {
-  const els = elsOf(pane);
-  const el = a && els[a.i];
+function restoreAnchor(a) {
+  const el = a && pageEls[a.i] && pageEls[a.i].container;
   if (!el) return;
   const r = el.getBoundingClientRect();   // forces the new layout: read after the zoom
-  pane.scrollLeft += r.left + a.fx * r.width - a.cx;
-  pane.scrollTop += r.top + a.fy * r.height - a.cy;
+  stageEl.scrollLeft += r.left + a.fx * r.width - a.cx;
+  stageEl.scrollTop += r.top + a.fy * r.height - a.cy;
 }
 
-function setZoom(z, pane, anchor) {
+function setZoom(z, anchor) {
   z = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
   if (Math.abs(z - zoom) < 0.001) return;
   zoom = z;
   document.documentElement.style.setProperty('--zoom', zoom);
   updateZoomUI();
   if (selected) renderZones(selected.page);   // handles keep a constant on-screen size
-  if (pane) restoreAnchor(pane, anchor);
-  onZoomChanged(pane || stageEl);
+  if (anchor) restoreAnchor(anchor);
   scheduleSharpen();
 }
 
@@ -1125,17 +1097,16 @@ function resetZoom() {
   updateZoomUI();
 }
 
-function stepZoom(dir, pane, anchor) {
+function stepZoom(dir, anchor) {
   const next = dir > 0
     ? ZOOM_STEPS.find(s => s > zoom + 0.001)
     : ZOOM_STEPS.filter(s => s < zoom - 0.001).pop();
-  setZoom(next === undefined ? (dir > 0 ? ZOOM_MAX : ZOOM_MIN) : next, pane, anchor);
+  setZoom(next === undefined ? (dir > 0 ? ZOOM_MAX : ZOOM_MIN) : next, anchor);
 }
 
 function zoomFromKeyboard(dir) {
-  const pane = livePane();
-  if (dir === 0) setZoom(1, pane, centerAnchor(pane));
-  else stepZoom(dir, pane, centerAnchor(pane));
+  if (dir === 0) setZoom(1, centerAnchor());
+  else stepZoom(dir, centerAnchor());
 }
 
 function updateZoomUI() {
@@ -1178,20 +1149,17 @@ function setPanReady(on) {
 }
 
 function wirePane(pane) {
-  pane.addEventListener('pointerenter', () => { activePane = pane; });
-  pane.addEventListener('scroll', () => { activePane = pane; }, { passive: true });
   pane.addEventListener('wheel', e => {
     if (!sid || !(e.ctrlKey || e.metaKey)) return;
     e.preventDefault();   // this gesture is ours, not the browser's page zoom
     const d = e.deltaMode === 1 ? e.deltaY * LINE_PX
       : e.deltaMode === 2 ? e.deltaY * PAGE_PX : e.deltaY;
-    setZoom(zoom * Math.pow(ZOOM_WHEEL, -d), pane, anchorAt(elsOf(pane), e.clientX, e.clientY));
+    setZoom(zoom * Math.pow(ZOOM_WHEEL, -d), anchorAt(e.clientX, e.clientY));
   }, { passive: false });
 
   pane.addEventListener('pointerdown', e => {
     if (e.button !== 1 && !(spaceDown && e.button === 0)) return;
     e.preventDefault();
-    activePane = pane;
     const sx = pane.scrollLeft, sy = pane.scrollTop;
     const x0 = e.clientX, y0 = e.clientY;
     document.body.classList.add('panning');
@@ -1204,29 +1172,26 @@ function wirePane(pane) {
   pane.addEventListener('auxclick', e => { if (e.button === 1) e.preventDefault(); });
 }
 
-// Arrows and page keys scroll the pane under the pointer, as in any viewer.
-// Ignored as soon as something is focused: a zone, the watermark field or the
-// zone menu answers them itself.
+// Arrows and page keys scroll the stage, as in any viewer. Ignored as soon as
+// something is focused: a zone, the watermark field or the zone menu answers
+// them itself.
 const PAN_KEYS = {
   ArrowUp: [0, -PAN_STEP], ArrowDown: [0, PAN_STEP],
   ArrowLeft: [-PAN_STEP, 0], ArrowRight: [PAN_STEP, 0],
 };
 function panKey(e) {
-  const pane = livePane();
   const step = PAN_KEYS[e.key];
-  if (step) { pane.scrollBy(step[0], step[1]); return true; }
-  const h = pane.clientHeight * 0.9;
-  if (e.key === 'PageDown') { pane.scrollBy(0, h); return true; }
-  if (e.key === 'PageUp') { pane.scrollBy(0, -h); return true; }
-  if (e.key === 'Home') { pane.scrollTo({ top: 0 }); return true; }
-  if (e.key === 'End') { pane.scrollTo({ top: pane.scrollHeight }); return true; }
+  if (step) { stageEl.scrollBy(step[0], step[1]); return true; }
+  const h = stageEl.clientHeight * 0.9;
+  if (e.key === 'PageDown') { stageEl.scrollBy(0, h); return true; }
+  if (e.key === 'PageUp') { stageEl.scrollBy(0, -h); return true; }
+  if (e.key === 'Home') { stageEl.scrollTo({ top: 0 }); return true; }
+  if (e.key === 'End') { stageEl.scrollTo({ top: stageEl.scrollHeight }); return true; }
   return false;
 }
 
 wirePane(stageEl);
-wirePane(inspectorEl);
 paneResize.observe(stageEl);
-paneResize.observe(inspectorEl);
 
 $('undo').onclick = undo;
 $('redo').onclick = redo;
@@ -1323,7 +1288,7 @@ $('export').onclick = async () => {
     const r = await fetch('/api/export', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        sid, zones, strip_meta: $('meta').checked, deleted_pages: [...deletedPages],
+        sid, zones, deleted_pages: [...deletedPages],
         watermark: $('wm').value,
       })
     });
@@ -1338,12 +1303,12 @@ $('export').onclick = async () => {
     const a = document.createElement('a'); a.href = d.download; a.download = d.filename;
     document.body.appendChild(a); a.click(); a.remove();
     setBusy(false);
-    // leak content comes from the PDF: never innerHTML with it.
-    if (d.leak_count) {
-      const detail = d.leaks.map(l => `p${l.page} ${l.kind} "${l.text}"`).join(', ');
-      setStatus(`Warning: ${d.leak_count} item(s) remain inside the zones (${detail}). Check the result.`, 'warn');
+    if (d.ocr === 'ok') {
+      setStatus(`Export done: ${d.pages} page(s) flattened and reindexed (${d.fragments} text fragments).`, 'ok');
+    } else if (d.ocr === 'partial') {
+      setStatus(`Export done: only ${d.indexed} of ${d.pages} page(s) could be reindexed.`, 'warn');
     } else {
-      setStatus('Export done, no residue detected inside the zones.', 'ok');
+      setStatus(`Export done: ${d.pages} page(s) flattened. No text layer — OCR is unavailable on this install.`, 'warn');
     }
   } catch (err) {
     setBusy(false);
@@ -1368,7 +1333,6 @@ function saveState() {
     sessionStorage.setItem(STATE_KEY, JSON.stringify({
       sid, zones,
       deleted: [...deletedPages],
-      strip_meta: $('meta').checked,
       watermark: $('wm').value,
     }));
   } catch {
@@ -1399,21 +1363,15 @@ async function restoreState() {
   deletedPages = new Set(Array.isArray(saved.deleted) ? saved.deleted : []);
   history = []; redoStack = [];   // the undo stack belongs to the page that is gone
   activePage = 0; selected = null;
-  if (typeof saved.strip_meta === 'boolean') $('meta').checked = saved.strip_meta;
   if (typeof saved.watermark === 'string') $('wm').value = saved.watermark;
 
   setBusy(true, 'Picking the document back up…');
-  $('drop').hidden = true; pagesEl.hidden = false;
+  showDocument();
   buildPages();
   syncDeletedUI();
   renderAll();   // buildPages lays out empty pages: the zones are drawn here
-  onDocumentOpened(sid);
   awaitFirstPage();
 }
-
-// the checkbox does not go through updateStatus, and it decides what the export
-// strips: it has to be in the snapshot too
-$('meta').addEventListener('change', saveState);
 
 restoreState();
 

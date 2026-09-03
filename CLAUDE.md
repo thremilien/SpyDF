@@ -42,6 +42,7 @@ allowed a one-line comment instead of a docstring.
 - `src/templates/index.html` + `src/templates/login.html` + `src/static/` — the
   UI (served directly, no templating engine)
 - `src/imagemeta.py` — the metadata inside an image stream, read and stripped
+- `src/ocr.py` — the images read one at a time, the way Chrome reads them
 - `src/logs.py` — the `"spydf"` logger: stderr always, optional rotating
   file; `log_event()` is the only thing that should write to it
 
@@ -77,10 +78,25 @@ allowed a one-line comment instead of a docstring.
   so an older client keeps working.
 - A white box over a scan is the tool's worst case, not a redaction: it looks
   like an erasure on the left, so nothing prompts a zone, while the image keeps
-  every pixel. `_covers()` in `src/probe.py` reports opaque fills lying inside
-  an image, and the inspector marks them "still there" until a zone reaches
-  them. The rectangle containing the whole image is the page background — it
-  must stay excluded, or every scan cries wolf.
+  every pixel. `_covers()` in `src/probe.py` finds these, and the inspector
+  marks them "still there" until a zone reaches them.
+- What makes a cover a cover is **paint order**, not shape: opaque paint with
+  something already painted under it. `page.get_bboxlog()` is the only view that
+  keeps that order (a drawing's `seqno` is its index in it, and the k-th image
+  entry is the k-th placement of `get_image_info()`). Order is load-bearing
+  twice over: it catches an *image* used as a cover — which is what a phone's
+  markup tool produces, and what a rule looking only at vector fills missed
+  entirely — and it makes the page background a non-event rather than a special
+  case, since nothing is painted under it.
+- Opaque paint over *blank* paper hides nothing. `_hidden_under` looks at what
+  is actually there before reporting a cover, or every solid shape on every
+  designed page would cry wolf. A scan's paper has grain, so the test is "a few
+  percent of the pixels sit far from the average", not a min/max spread.
+- Transparency is measured, not assumed: a phone feathers the rim of the patch
+  it lays down, so `_mask_is_solid` asks whether the *middle* hides, not the
+  edge. Refusing such a patch the status of cover would leave the name under it
+  unreported — the exam this was built for stacks a soft-edged patch on a solid
+  one at the same spot.
 - An image carries metadata of its own, inside its stream: Exif (camera, serial,
   date, GPS, and a *thumbnail* that is a small copy of the picture before
   anything was drawn on it), XMP, IPTC, JPEG comments. Redaction rewrites only
@@ -95,6 +111,37 @@ allowed a one-line comment instead of a docstring.
   CMYK scan inverts). `_recompress_images` therefore runs *before*
   `_scrub_document`: re-encoding writes fresh image streams, and the strip has to
   be the last thing to see them.
+- Chrome does not OCR the page it shows. `pdfium_ocr.cc` walks the page objects,
+  keeps the images, and reads each one *alone*
+  (`FPDFImageObj_GetRenderedBitmap`), then lays the recognised text back over it
+  as invisible ink so it can be selected. A patch dropped on a scan is a
+  separate object, so it is simply not in the bitmap the OCR is given: the name
+  underneath comes back selectable, exactly where the patch is meant to hide it.
+  `src/ocr.py` reproduces that deliberately — it reads image objects one by one
+  and never a rendered page. Reading the rendered page would show what the eye
+  shows and miss precisely what makes a cover dangerous. What the pane reports
+  is therefore not "what is written on the page" but "what the file hands to
+  whoever opens it next"; the two differ only where someone tried to hide
+  something.
+- `ocr.place` (normalised image rectangle -> where the placement draws it) and
+  `probe._image_subrect` (the reverse) are inverses and must stay so: one says
+  where a fragment lands, the other which part of the image a cover sits on. A
+  test pins the round trip. Both flip twice — image rows count downwards, the
+  placement matrix works in PDF coordinates whose y grows upwards.
+- OCR never runs inside `inspect_document`: recognition is seconds a page where
+  the rest of the inspection is instant, so it is its own route
+  (`/api/ocr/{sid}`), cached on the session, and the pane asks for it. An
+  image-only page must never be called "nothing selectable or indexable" again —
+  that was false for every reader with OCR, and most wrong exactly where it
+  mattered.
+- `_verify` reads the export back two ways, and both are load-bearing: the text
+  layer for words, and the images for what a reader would still recognise. On a
+  scan there is no text layer at all, so words alone would pass every image-only
+  document having verified nothing — the one document class where covering
+  instead of deleting is the norm. `OCR_LEAK_COVERAGE` is higher than
+  `LEAK_COVERAGE` because recognition returns whole lines: a heading a zone's
+  edge clips overlaps it by about a fifth, a real survivor by nearly all of
+  itself.
 - The inspector marks image metadata erased or kept from the scrubbing checkbox
   alone, never from a zone. Redacting over an image does rewrite its stream, but
   promising an erasure a zone might not deliver is the one mistake this pane

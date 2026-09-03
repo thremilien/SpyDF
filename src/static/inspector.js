@@ -22,6 +22,11 @@ const stage = $('stage');
 const SVGNS = 'http://www.w3.org/2000/svg';
 
 let inspectData = null;
+// What the images say when they are read one by one, as a reader reads them.
+// Fetched on demand: recognition costs seconds a page, the rest of the pane is
+// instant, and the two must not be made to wait for each other.
+let ocrData = null;
+let ocrBusy = false;
 // Items are grouped by page (key 'doc' for what belongs to none), so moving a
 // zone only recolours the page it is on.
 let inspectItems = {};      // page|'doc' -> [{rule, page, rect, hidden, el, chip, notable}]
@@ -133,6 +138,13 @@ function statusOf(it) {
       // the white box hides the pixels, it does not remove them: only a zone
       // over it destroys what is underneath
       return hit ? { cls: 'gone', label: 'erased' } : { cls: 'kept', label: 'still there' };
+    case 'ocr':
+      // Recognised in an image, so no text object holds it and the scrubbing
+      // cannot touch it: destroying the pixels under a zone is the only thing
+      // that removes it.
+      if (hit) return GONE;
+      // the rail is a narrow column: a chip has room for two words, not four
+      return it.hidden ? { cls: 'kept', label: 'readable' } : { cls: 'info', label: '' };
     case 'widget':
       if (hit) return GONE;
       return stripMeta() ? { cls: 'partial', label: 'value reset' } : KEPT;
@@ -242,6 +254,111 @@ function makeCoverAction(target, c) {
   });
 }
 
+// ---------- what the images say ----------
+// Chrome does not run its OCR on the page it shows you. `pdfium_ocr.cc` walks
+// the page objects, keeps the images, and reads each one *alone*
+// (FPDFImageObj_GetRenderedBitmap), then lays the recognised text back over it
+// as invisible ink so it can be selected. A patch dropped on a scan is a
+// separate object, so it is simply not in the bitmap the OCR is given: the name
+// underneath comes back selectable, exactly where the patch is meant to hide it.
+//
+// So this is not "what is written on the page" — it is what the file hands to
+// whoever opens it next. The two differ precisely where someone tried to hide
+// something, which is the only place it matters.
+let ocrError = '';
+let ocrEngine = true;
+
+const HIDDEN_SHARE = 0.6;   // of a fragment that must sit under a cover to count as hidden
+
+function wordsOf(n) {
+  return (ocrData && ocrData[n]) || [];
+}
+
+function coversOf(n) {
+  const p = inspectData && inspectData.pages[n];
+  return (p && p.covers) || [];
+}
+
+// Share of `a` that lies inside `b`, both as [x0, y0, x1, y1].
+function insideShare(a, b) {
+  const w = Math.min(a[2], b[2]) - Math.max(a[0], b[0]);
+  const h = Math.min(a[3], b[3]) - Math.max(a[1], b[1]);
+  const area = (a[2] - a[0]) * (a[3] - a[1]);
+  return w > 0 && h > 0 && area > 0 ? (w * h) / area : 0;
+}
+
+// The cover a fragment sits under, if any: that is the one to redact.
+function coverOver(n, rect) {
+  return coversOf(n).find(c => insideShare(rect, c.rect) > HIDDEN_SHARE) || null;
+}
+
+async function runOcr() {
+  if (ocrBusy || !sid || !inspectData) return;
+  ocrBusy = true;
+  ocrError = '';
+  build(inspectData);
+  try {
+    const r = await fetch(`/api/ocr/${sid}`);
+    if (signedOut(r.status)) return;
+    if (!r.ok) throw new Error(await r.text());
+    const d = await r.json();
+    ocrEngine = d.available;
+    ocrData = {};
+    d.pages.forEach(p => { ocrData[p.n] = p.words; });
+  } catch (err) {
+    ocrError = err.message || 'error';
+  } finally {
+    ocrBusy = false;
+    build(inspectData);
+  }
+}
+
+function buildOcrSection(parent, pagesData) {
+  const hidden = [];
+  let total = 0;
+  pagesData.forEach(p => wordsOf(p.n).forEach(w => {
+    total++;
+    const c = coverOver(p.n, w.rect);
+    if (c) hidden.push({ ...w, n: p.n, cover: c });
+  }));
+
+  const sec = section(parent, 'Readable in the images', ocrData ? hidden.length : null);
+  if (!ocrData) {
+    emptyNote(sec, ocrBusy
+      ? 'Reading the images one by one… this takes a few seconds a page.'
+      : 'A picture of a page holds text that no zone and no text layer knows about. '
+        + 'Chrome reads it: it recognises each image on its own, which is why a name '
+        + 'under a white patch can still be selected in the browser. Read them here to '
+        + 'see what it would find.');
+    if (ocrError) emptyNote(sec, `The images could not be read: ${ocrError}`);
+    const btn = el('button', 'ins-action', ocrBusy ? 'Reading…' : 'Read the images');
+    btn.type = 'button';
+    btn.disabled = ocrBusy;
+    btn.addEventListener('click', runOcr);
+    sec.append(btn);
+    return;
+  }
+  if (!ocrEngine) {
+    emptyNote(sec, 'No recognition engine is installed, so this pane cannot say what the '
+      + 'images hold. A reader that has one still can.');
+    return;
+  }
+  if (hidden.length) {
+    emptyNote(sec, 'Under a cover, and readable all the same. This is what the file hands '
+      + 'to the next reader — the page shows none of it.');
+    hidden.forEach(w => {
+      const r = row(sec, `p. ${w.n + 1}`, w.text,
+        { rule: 'ocr', page: w.n, rect: w.rect, hidden: true, notable: true });
+      r.title = COVER_TIP;
+      makeCoverAction(r, { ...w.cover, n: w.n });
+    });
+  } else {
+    emptyNote(sec, 'Nothing readable is hidden: every fragment recognised in the images is '
+      + 'also visible on the page.');
+  }
+  emptyNote(sec, `${total} fragment(s) recognised in all, drawn on the pages.`);
+}
+
 // ---------- the column: what has no position on any page ----------
 function buildRail(d, pagesData) {
   insRail.textContent = '';
@@ -269,18 +386,38 @@ function buildRail(d, pagesData) {
 
   // Listed, not only drawn on the pages: the summary says the kept items are
   // "marked below", and a cover is exactly the item you would go looking for.
-  const covers = pagesData.flatMap(p => (p.covers || []).map(c => ({ ...c, n: p.n })));
+  const covers = pagesData.flatMap(
+    p => (p.covers || []).map((c, i) => ({ ...c, n: p.n, i })));
   const cov = section(insRail, 'Opaque covers', covers.length);
   if (covers.length) {
+    const all = el('button', 'ins-action', `Redact all ${covers.length}`);
+    all.type = 'button';
+    all.title = 'One zone over each cover, on every page. They are ordinary zones: '
+      + 'movable, and undone with Ctrl+Z.';
+    all.addEventListener('click', () => covers.forEach(coverZone));
+    cov.append(all);
     covers.forEach(c => {
       const [x0, y0, x1, y1] = c.rect;
       const r = row(cov, `p. ${c.n + 1}`,
-        `${Math.round(x1 - x0)} × ${Math.round(y1 - y0)} pt, ${colorName(c.color)}`,
+        `${Math.round(x1 - x0)} × ${Math.round(y1 - y0)} pt, ${colorName(c.color)}`
+        + (c.hides.includes('text') ? ', over text' : ''),
         { rule: 'cover', page: c.n, rect: c.rect, notable: true });
       r.title = COVER_TIP;
       makeCoverAction(r, c);
+      // Saying an area hides something is a claim; showing it is the proof, and
+      // it is the very picture the next reader of the file gets for free.
+      if (c.under) {
+        const img = el('img', 'ins-reveal');
+        img.loading = 'lazy';
+        img.alt = `What the cover on page ${c.n + 1} hides`;
+        img.title = 'What is underneath, taken from the image itself.';
+        img.src = `/api/reveal/${sid}/${c.n}/${c.i}`;
+        cov.append(img);
+      }
     });
   } else emptyNote(cov, 'None.');
+
+  buildOcrSection(insRail, pagesData);
 
   // Inside the image, not on the page: a scan photographed with a phone carries
   // the camera, its serial number, the date, sometimes a GPS fix — and a
@@ -346,6 +483,7 @@ function buildRail(d, pagesData) {
    ['ig-legend-annot', 'annotation, field, link, image'],
    ['ig-legend-zone', 'zone drawn on the left'],
    ['ig-legend-cover', 'opaque cover: hidden, not removed'],
+   ['ig-legend-ocr', 'text read from an image, as a reader reads it'],
    ['ig-legend-gone', 'what will disappear on export']].forEach(([cls, text]) => {
     const line = el('div', 'ins-legend');
     line.append(el('span', `ins-legend-mark ${cls}`));
@@ -453,17 +591,43 @@ function buildGhost(p) {
     addItem({ rule: 'cover', page: p.n, rect: c.rect, el: g, chip: null, notable: false });
   });
 
+  // Recognised in the images: at the position the image draws it, so a fragment
+  // sitting under a cover lands right on that cover — which is the whole point.
+  let hiddenWords = 0;
+  wordsOf(p.n).forEach(w => {
+    const cover = coverOver(p.n, w.rect);
+    const g = boxNode(w.rect, cover ? 'ig-ocr is-hidden' : 'ig-ocr',
+      cover
+        ? `"${w.text}" — under a cover, and readable all the same: a reader gets it `
+          + 'from the image, which never sees the patch laid over it.'
+        : `"${w.text}" — read from the image, not from a text layer.`);
+    svg.append(g);
+    if (cover) hiddenWords++;
+    addItem({
+      rule: 'ocr', page: p.n, rect: w.rect, hidden: !!cover,
+      el: g, chip: null, notable: !!cover,
+    });
+  });
+
   cont.append(svg, tab);
   const struct = p.struct || [];
   const covers = p.covers || [];
   const traces = imageTraces(p);
   if (!spanCount) {
-    // "only an image" was said even when the file described the page in its
-    // structure tree — text no zone can reach, and the only one such a page has.
-    cont.append(el('div', 'ins-page-note', struct.length
-      ? 'No text on the page itself: it is only an image. But the file carries '
-        + 'text for it outside the page, listed in the left-hand column.'
-      : 'No text: this page is only an image, nothing on it is selectable or indexable.'));
+    // An image-only page used to be called "nothing selectable or indexable".
+    // That was never true of a reader that recognises text, and Chrome has done
+    // so on every scanned PDF since version 126 — the claim was at its most
+    // wrong exactly where it mattered, on the scan hiding a name under a patch.
+    const words = wordsOf(p.n).length;
+    const read = ocrData
+      ? ` ${words} fragment(s) were read out of its images`
+        + (hiddenWords ? `, ${hiddenWords} of them under a cover.` : '.')
+      : ' What is drawn in it can still be read: use "Read the images" to see what.';
+    cont.append(el('div', 'ins-page-note',
+      (struct.length
+        ? 'No text on the page itself: it is only an image. The file also carries text '
+          + 'for it outside the page, listed in the left-hand column.'
+        : 'No text layer: this page is only an image.') + read));
   }
   const counts = [
     spanCount && `${spanCount} text fragment(s)`,
@@ -474,6 +638,7 @@ function buildGhost(p) {
     p.links.length && `${p.links.length} link(s)`,
     p.images.length && `${p.images.length} image(s)`,
     traces.length && `${traces.length} image metadata item(s)`,
+    wordsOf(p.n).length && `${wordsOf(p.n).length} fragment(s) read in the images`,
     p.drawings && `${p.drawings} drawing(s)`,
   ].filter(Boolean);
   cont.append(el('div', 'ins-page-counts', counts.join(' · ') || 'Empty page'));
@@ -647,6 +812,9 @@ inspector.addEventListener('scrollend', () => release(inspector));
 // ---------- hooks ----------
 onDocumentOpened = async sid => {
   inspectData = null;
+  ocrData = null;
+  ocrError = '';
+  ocrBusy = false;
   ghosts = [];
   insRail.textContent = '';
   insPages.textContent = '';

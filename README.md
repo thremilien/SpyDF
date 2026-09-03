@@ -161,8 +161,23 @@ column on the far left. Between them, the pane accounts for:
   removing one of them. Every renderer paints the box, so the area looks blank
   here too and nothing invites you to draw a zone there, while the image still
   carries the original: any OCR, "extract images" or object-delete gets it
-  back. The pane outlines those areas in red and counts them as *still there*
-  until a zone covers one — a zone does destroy the pixels underneath;
+  back. A cover is found by paint order — opaque paint with something already
+  painted under it — so a *picture* used as a patch counts, which is what a
+  phone's markup tool produces, and paint over blank paper does not. The pane
+  outlines those areas in red, **shows you what each one hides**, taken from
+  the image itself, and counts them as *still there* until a zone covers one —
+  a zone does destroy the pixels underneath. "Redact all" hands you one zone
+  per cover, on every page;
+- **what the images say** — a picture of a page holds text that no text layer
+  knows about, and readers do read it. Chrome has OCR'd scanned PDFs since
+  version 126, and it does *not* read the page it shows you: it reads each
+  image object on its own, then lays the recognised text back over it so it can
+  be selected. A patch dropped on a scan is a separate object, so the OCR never
+  sees it — which is why a name under a white box can still be selected and
+  copied in the browser. This pane reads the images the same way and marks
+  every fragment that sits under a cover: hidden from you, readable by the next
+  person who opens the file. It costs seconds a page, so it is a button rather
+  than something you wait for;
 - **image metadata** — the Exif, XMP, IPTC and comments an image carries in its
   own stream, one row per field: camera, serial number, date, GPS, thumbnail.
   It is listed in the column rather than on the page because that is where it
@@ -193,6 +208,14 @@ for text, annotations or form fields still inside a redacted zone. A word
 counts as a survivor once a redacted strip covers a real part of it, not when
 it merely grazes the outline. Any survivor is reported in the status bar, so a
 failed redaction is visible rather than silent.
+
+The text layer is not the whole check. A scan has none, so looking only for
+words would pass every image-only document without having verified anything —
+and that is the one kind of document where covering instead of deleting is the
+norm. So the zones are also read back the way a reader would read them, image
+by image. A fragment must lie almost entirely inside a zone to count, because
+recognition returns whole lines: a heading the zone's edge merely clips is not
+a leak, or every export would cry wolf.
 
 ### Keyboard
 
@@ -254,6 +277,7 @@ and that the image still decodes, pixel for pixel, afterwards.
 - `src/logs.py` — the audit log (connection, import, export)
 - `src/probe.py` — read-only extraction of the document's invisible payload
 - `src/imagemeta.py` — the metadata carried inside an image, read and removed
+- `src/ocr.py` — the images read one at a time, the way Chrome reads them
 - `src/server.py` — server bootstrap (opens browser, runs uvicorn)
 - `src/templates/index.html` — page shell
 - `src/static/app.js` — pages, zones, export

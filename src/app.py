@@ -14,6 +14,7 @@ from pathlib import Path
 
 import fitz
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -43,8 +44,12 @@ from src.config import (
     MAX_ZOOM,
     MIN_ZOOM,
     MOSAIC_BLOCKS,
+    OCR_LEAK_COVERAGE,
+    OCR_MAX_IMAGES,
     RECOMPRESS_QUALITY,
     RENDER_ZOOM,
+    REVEAL_MAX_ZOOM,
+    REVEAL_WIDTH,
     SESSION_TTL,
     SID_LOG_LEN,
     STRIP_HEIGHT,
@@ -54,10 +59,14 @@ from src.config import (
     WATERMARK_MAX_LEN,
     WATERMARK_MIN_SIZE,
     env_flag,
+    ocr_verify,
 )
 from src.imagemeta import strip_image_metadata
 from src.logs import log_event
-from src.probe import STRUCT_TEXT_KEYS, inspect_document
+from src.ocr import available as ocr_available
+from src.ocr import document_words
+from src.ocr import page_words as ocr_page_words
+from src.probe import STRUCT_TEXT_KEYS, _covers, inspect_document
 
 PACKAGE_DIR = Path(__file__).parent
 
@@ -440,6 +449,74 @@ def api_inspect(sid: str):
     """
     entry = _get(sid)
     return JSONResponse(inspect_document(entry["bytes"]))
+
+
+@app.get("/api/ocr/{sid}")
+async def api_ocr(sid: str):
+    """Read the document's images the way Chrome reads them, one image at a time.
+
+    Slow enough to be its own request rather than part of `/api/inspect`: a scan
+    takes seconds a page, where the rest of the inspection is instant. The
+    result is kept on the session, so asking twice costs once.
+
+    Args:
+        sid: Session id.
+
+    Returns:
+        The `src.ocr.document_words` payload, as JSON.
+    """
+    entry = _get(sid)
+    if "ocr" not in entry:
+        entry["ocr"] = await run_in_threadpool(document_words, entry["bytes"])
+    return JSONResponse(entry["ocr"])
+
+
+@app.get("/api/reveal/{sid}/{n}/{index}")
+def api_reveal(sid: str, n: int, index: int):
+    """Render what a cover hides, from the image it hides it in.
+
+    The pane can say a patch hides something; showing it is what makes that
+    believable, and it is the same picture the next reader of the file gets for
+    free. Read-only, like everything else the inspector does.
+
+    Args:
+        sid: Session id.
+        n: Zero-based page number.
+        index: Which cover of that page, as listed by the inspection.
+
+    Returns:
+        The PNG, marked no-store.
+
+    Raises:
+        HTTPException: 404 for an unknown session, page, or cover.
+    """
+    entry = _get(sid)
+    doc = fitz.open(stream=entry["bytes"], filetype="pdf")
+    try:
+        if not 0 <= n < len(doc):
+            raise HTTPException(404, "page out of range")
+        covers = _covers(doc[n])
+        if not 0 <= index < len(covers):
+            raise HTTPException(404, "no such cover")
+        under = covers[index].get("under")
+        if not under:
+            raise HTTPException(404, "nothing readable under this cover")
+        img = doc.extract_image(under["xref"])
+        idoc = fitz.open(stream=img["image"], filetype=img["ext"])
+        page = idoc[0]
+        r, sub = page.rect, under["sub"]
+        clip = fitz.Rect(
+            r.x0 + sub[0] * r.width,
+            r.y0 + sub[1] * r.height,
+            r.x0 + sub[2] * r.width,
+            r.y0 + sub[3] * r.height,
+        )
+        zoom = min(max(REVEAL_WIDTH / max(clip.width, 1e-6), 1.0), REVEAL_MAX_ZOOM)
+        png = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip, alpha=False).tobytes("png")
+        idoc.close()
+    finally:
+        doc.close()
+    return Response(png, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
 # A rectangular zone has nothing to cut up: its outline *is* its bounding box.
@@ -872,6 +949,13 @@ def _verify(out: bytes, zones_by_page, page_map):
     outline rather than the bounding box, a word grazing the stroke by tenths of
     a point is routine, and reporting it would drown real leaks in noise.
 
+    The text layer is not the whole check. On a scan there is no text layer at
+    all, so looking only for words would pass every image-only document without
+    having verified anything — which is the one document class where covering
+    instead of deleting is the norm. The zones are therefore read back the way a
+    reader would read them: each exported image on its own (`src.ocr`), which is
+    also how the leak would be found by whoever opens the file next.
+
     Args:
         out: The exported PDF bytes.
         zones_by_page: Parsed zones, keyed by original page number.
@@ -881,6 +965,9 @@ def _verify(out: bytes, zones_by_page, page_map):
         One entry per survivor: {"page", "kind", "text"}.
     """
     leaks = []
+    read_images = ocr_verify() and ocr_available()
+    ocr_cache: dict[int, list[dict]] = {}
+    ocr_budget = [OCR_MAX_IMAGES]
     chk = fitz.open(stream=out, filetype="pdf")
     try:
         for pno, zs in zones_by_page.items():
@@ -907,6 +994,11 @@ def _verify(out: bytes, zones_by_page, page_map):
             for w in page.widgets():
                 if any(w.rect.intersects(r) for r in rects):
                     leaks.append({"page": new_no + 1, "kind": "field", "text": w.field_name or "?"})
+            if not read_images:
+                continue
+            for w in ocr_page_words(page, ocr_cache, ocr_budget):
+                if _covered_fraction(fitz.Rect(w["rect"]), rects) >= OCR_LEAK_COVERAGE:
+                    leaks.append({"page": new_no + 1, "kind": "image text", "text": w["text"]})
     finally:
         chk.close()
     return leaks
@@ -1082,7 +1174,7 @@ async def api_export(request: Request, payload: dict):
     # drown real leaks in guaranteed noise. Filtering leaks that merely match the
     # watermark text would be worse — a real leak saying the same thing would
     # slip through. So: verify first, stamp second.
-    leaks = _verify(out, zones_by_page, page_map)
+    leaks = await run_in_threadpool(_verify, out, zones_by_page, page_map)
     if watermark:
         out = _apply_watermark(out, watermark)
 

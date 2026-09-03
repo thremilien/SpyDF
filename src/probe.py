@@ -2,6 +2,7 @@
 
 import fitz
 
+from src.config import COVER_INK_DELTA, COVER_INK_RATIO, COVER_PROBE_PX
 from src.imagemeta import image_traces
 
 MAX_SPANS = 30_000  # guard rail on a very long document
@@ -11,7 +12,7 @@ SNIPPET = 2000  # a whole script is never returned
 # (a rule, a bullet), not something dropped on a scan to hide a name.
 COVER_MIN_SIDE = 4.0  # PDF points
 COVER_MIN_AREA_RATIO = 0.0005  # of the page area
-COVER_TOLERANCE = 1.0  # a cover flush with the image edge still counts as inside
+COVER_MASK_SOLID = 0.9  # of a soft mask that must be opaque before it hides
 
 META_LABELS = [
     ("title", "Title"),
@@ -344,54 +345,307 @@ def _images(page, traces: dict) -> list[dict]:
     return out
 
 
-def _covers(page, image_rects) -> list[dict]:
-    """Find the opaque rectangles painted over an image.
+def _paint_log(page):
+    """Every paint operation of the page, in the order it happens.
+
+    `get_bboxlog()` is the only view that keeps that order, and order is what
+    makes a cover a cover: paint lying over nothing is a background, the same
+    paint over an earlier one hides it. `seqno` on a drawing is this list's
+    index, and the k-th image entry is the k-th placement of `get_image_info()`.
+
+    Args:
+        page: The page to read.
+
+    Returns:
+        (entries, images): entries are {"kind", "rect"}; images maps an entry
+        index to its `get_image_info` record.
+    """
+    try:
+        log = page.get_bboxlog()
+        infos = page.get_image_info(xrefs=True)
+    except Exception:
+        return [], {}
+    entries, images, k = [], {}, 0
+    for i, item in enumerate(log):
+        kind, box = item[0], item[1]
+        entries.append({"kind": kind, "rect": fitz.Rect(box)})
+        if kind == "fill-image":
+            if k < len(infos):
+                images[i] = infos[k]
+            k += 1
+    return entries, images
+
+
+def _image_subrect(rect, info, page):
+    """Where a page rectangle falls inside the image drawn under it, 0-1.
+
+    The inverse of `src.ocr.place`, and it has to stay so: one says where the
+    image's content lands on the page, the other which part of the image a cover
+    sits on.
+
+    Args:
+        rect: The rectangle in page coordinates.
+        info: One entry of `page.get_image_info()`.
+        page: The page it is drawn on.
+
+    Returns:
+        (u0, v0, u1, v1) clipped to the image, or None when they do not meet.
+    """
+    try:
+        mat = ~fitz.Matrix(info["transform"])
+    except Exception:
+        return None
+    pts = []
+    for x in (rect.x0, rect.x1):
+        for y in (rect.y0, rect.y1):
+            p = fitz.Point(x, page.rect.y1 - y) * mat
+            pts.append((p.x, 1 - p.y))
+    us = [max(0.0, min(1.0, p[0])) for p in pts]
+    vs = [max(0.0, min(1.0, p[1])) for p in pts]
+    u0, u1, v0, v1 = min(us), max(us), min(vs), max(vs)
+    if u1 - u0 < 1e-4 or v1 - v0 < 1e-4:
+        return None
+    return (round(u0, 4), round(v0, 4), round(u1, 4), round(v1, 4))
+
+
+def _crop_pixmap(doc, xref, sub):
+    """Render a normalised part of an image, small, for a look at what is there.
+
+    Args:
+        doc: The open document.
+        xref: The image's xref.
+        sub: (u0, v0, u1, v1), normalised to the image.
+
+    Returns:
+        A small pixmap of that part, or None.
+    """
+    try:
+        img = doc.extract_image(xref)
+        idoc = fitz.open(stream=img["image"], filetype=img["ext"])
+        page = idoc[0]
+        r = page.rect
+        clip = fitz.Rect(
+            r.x0 + sub[0] * r.width,
+            r.y0 + sub[1] * r.height,
+            r.x0 + sub[2] * r.width,
+            r.y0 + sub[3] * r.height,
+        )
+        scale = min(COVER_PROBE_PX / max(clip.width, clip.height, 1e-6), 4.0)
+        pm = page.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=clip, alpha=False)
+        idoc.close()
+    except Exception:
+        return None
+    return pm if pm.width and pm.height else None
+
+
+def _has_ink(pm) -> bool:
+    """Whether a pixmap holds anything but an even tone.
+
+    A scan's blank paper is never one exact value — it has grain — so a plain
+    min/max spread would call every empty margin content. What separates ink
+    from grain is that a few percent of the pixels sit far from the average.
+
+    Args:
+        pm: The pixmap to weigh.
+
+    Returns:
+        Whether it carries something worth hiding.
+    """
+    s = pm.samples
+    if not s:
+        return False
+    mean = sum(s) / len(s)
+    far = sum(1 for v in s if abs(v - mean) > COVER_INK_DELTA)
+    return far > len(s) * COVER_INK_RATIO
+
+
+def _mean_color(pm) -> list[float]:
+    """The average colour of a pixmap, as 0-1 channels, padded to RGB."""
+    s, n = pm.samples, pm.n
+    if not s or not n:
+        return [1.0, 1.0, 1.0]
+    chans = [sum(s[i::n]) / (len(s) / n) / 255.0 for i in range(min(n, 3))]
+    while len(chans) < 3:
+        chans.append(chans[0])
+    return [round(c, 3) for c in chans]
+
+
+def _opaque_paint(entry, index, drawings, images, doc):
+    """Whether one paint operation hides whatever it is laid over, and in what colour.
+
+    Args:
+        entry: The paint log entry.
+        index: Its index in the log.
+        drawings: seqno -> the `get_drawings()` record.
+        images: log index -> the `get_image_info()` record.
+        doc: The open document.
+
+    Returns:
+        (opaque, colour) — colour as 0-1 RGB, used to repaint the area when the
+        cover becomes a zone. `(False, None)` for anything see-through.
+    """
+    if entry["kind"] == "fill-path":
+        d = drawings.get(index)
+        if d is None or d.get("fill") is None:
+            return False, None
+        if (d.get("fill_opacity") if d.get("fill_opacity") is not None else 1) < 0.99:
+            return False, None
+        return True, [round(float(c), 3) for c in d["fill"]]
+    if entry["kind"] == "fill-image":
+        info = images.get(index)
+        if info is None:
+            return False, None
+        # A stencil or soft mask can be see-through anywhere; what matters is
+        # whether this placement actually hides, so the alpha is measured rather
+        # than assumed. An image without one is opaque by definition.
+        xref = info.get("xref") or 0
+        pm = _crop_pixmap(doc, xref, (0.0, 0.0, 1.0, 1.0))
+        if pm is None:
+            return False, None
+        if info.get("has-mask") and not _mask_is_solid(doc, xref):
+            return False, None
+        return True, _mean_color(pm)
+    return False, None
+
+
+def _mask_is_solid(doc, xref) -> bool:
+    """Whether an image's transparency actually hides, over most of its area.
+
+    A phone's markup tool feathers the edges of the patch it lays down: the mask
+    dips below full opacity all round the rim and hides perfectly everywhere
+    else. Refusing such a patch the status of a cover would leave the name under
+    it unreported, so the rim is allowed to be soft and the middle is not.
+
+    Args:
+        doc: The open document.
+        xref: The image's xref.
+
+    Returns:
+        Whether it is opaque over nearly all of itself.
+    """
+    try:
+        info = doc.extract_image(xref)
+        smask = info.get("smask") or 0
+        if not smask:
+            return True
+        pm = _crop_pixmap(doc, smask, (0.0, 0.0, 1.0, 1.0))
+    except Exception:
+        return True
+    if pm is None:
+        return True
+    s = pm.samples
+    if not s:
+        return True
+    solid = sum(1 for v in s if v >= 250)
+    return solid > len(s) * COVER_MASK_SOLID
+
+
+def _covers(page) -> list[dict]:
+    """Find what the page paints over something else, hiding it without removing it.
 
     A white box dropped on a scan removes nothing: the image still carries, byte
     for byte, what the box hides. Every renderer paints the box, so the area
     looks blank — including in this app, where the user then has no reason to
     draw a zone there — while anything reading the image instead of the composed
-    page (OCR, "extract images", an editor deleting the overlay) gets the
-    original back. On an exam header that is the student's name.
+    page gets the original back. Chrome does exactly that, on every scanned PDF
+    it opens (see `src.ocr`). On an exam header that is the student's name.
 
-    A rectangle containing the whole image is the page background, not a cover,
-    so only fills lying inside an image count.
+    The test is paint order, not shape: opaque paint over an earlier paint. That
+    is what catches an image used as a cover — which is what a phone's markup
+    tool produces, and what a rule looking only at vector fills misses entirely.
+    It also makes the page background a non-event rather than a special case,
+    since nothing is painted under it.
+
+    Opaque paint over *blank* paper hides nothing, so what is underneath is
+    looked at before the cover is reported: without that, every solid shape on
+    every designed page would cry wolf.
 
     Args:
         page: The page to read.
-        image_rects: The rectangles the page's images occupy.
 
     Returns:
-        One entry per cover, with its rectangle and fill colour.
+        One entry per cover: its rectangle, the colour to repaint it in, what it
+        hides, and which image it sits on, so the pane can show what is there.
     """
-    if not image_rects:
+    doc = page.parent
+    entries, images = _paint_log(page)
+    if not entries:
         return []
+    drawings = {}
     try:
-        drawings = page.get_drawings()
+        for d in page.get_drawings():
+            drawings[d.get("seqno")] = d
     except Exception:
-        return []
+        pass
     page_area = abs(page.rect.width * page.rect.height) or 1.0
-    pad = (-COVER_TOLERANCE, -COVER_TOLERANCE, COVER_TOLERANCE, COVER_TOLERANCE)
-    grown = [(r + pad, r) for r in image_rects]
     out, seen = [], set()
-    for d in drawings:
-        if "f" not in (d.get("type") or "") or d.get("fill") is None:
-            continue
-        if (d.get("fill_opacity") if d.get("fill_opacity") is not None else 1) < 0.99:
-            continue
-        r = d["rect"]
+    for i, entry in enumerate(entries):
+        r = entry["rect"]
         if r.width < COVER_MIN_SIDE or r.height < COVER_MIN_SIDE:
             continue
         if abs(r.width * r.height) < page_area * COVER_MIN_AREA_RATIO:
             continue
-        if not any(g.contains(r) and not r.contains(im) for g, im in grown):
+        opaque, color = _opaque_paint(entry, i, drawings, images, doc)
+        if not opaque:
+            continue
+        hides, under = _hidden_under(entries[:i], images, r, doc, page, page_area)
+        if not hides:
             continue
         key = tuple(_r(r))
         if key in seen:
             continue
         seen.add(key)
-        out.append({"rect": list(key), "color": [round(float(c), 3) for c in d["fill"]]})
+        out.append(
+            {
+                "rect": list(key),
+                "color": color,
+                "hides": sorted(hides),
+                "under": under,
+                "kind": "image" if entry["kind"] == "fill-image" else "fill",
+            }
+        )
     return out
+
+
+def _hidden_under(earlier, images, rect, doc, page, page_area):
+    """What an opaque rectangle actually hides among everything painted before it.
+
+    Args:
+        earlier: The paint log entries preceding the cover.
+        images: log index -> `get_image_info()` record.
+        rect: The cover's rectangle.
+        doc: The open document.
+        page: The page being read.
+        page_area: Its area, to tell a background fill from a drawn shape.
+
+    Returns:
+        (kinds, under): what is hidden, and {"xref", "sub"} for the image it
+        sits on, so the hidden area can be shown as it is.
+    """
+    kinds, under = set(), None
+    for j, prev in enumerate(earlier):
+        if not (prev["rect"] & rect).is_valid or (prev["rect"] & rect).is_empty:
+            continue
+        if prev["kind"].endswith("text"):
+            kinds.add("text")
+        elif prev["kind"] == "fill-image":
+            info = images.get(j)
+            if info is None:
+                continue
+            sub = _image_subrect(rect, info, page)
+            if sub is None:
+                continue
+            pm = _crop_pixmap(doc, info.get("xref") or 0, sub)
+            if pm is not None and _has_ink(pm):
+                kinds.add("image")
+                if under is None:
+                    under = {"xref": info.get("xref") or 0, "sub": list(sub)}
+        # a page-sized fill is the paper, not something being hidden
+        elif prev["kind"].endswith("path") and (
+            abs(prev["rect"].width * prev["rect"].height) < page_area * 0.5
+        ):
+            kinds.add("drawing")
+    return kinds, under
 
 
 def inspect_document(data: bytes) -> dict:
@@ -427,7 +681,6 @@ def inspect_document(data: bytes) -> dict:
             except Exception:
                 drawings = 0
             images = _images(page, traces)
-            image_rects = [fitz.Rect(im["rect"]) for im in images if im["rect"]]
             pages.append(
                 {
                     "n": n,
@@ -436,7 +689,7 @@ def inspect_document(data: bytes) -> dict:
                     "widgets": _widgets(page),
                     "links": _links(page),
                     "images": images,
-                    "covers": _covers(page, image_rects),
+                    "covers": _covers(page),
                     "struct": structs.get(n, []),
                     "drawings": drawings,
                 }

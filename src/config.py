@@ -116,6 +116,38 @@ LEAK_COVERAGE = env_float("SPYDF_LEAK_COVERAGE", 0.15)  # word coverage above wh
 # 0 disables it and keeps the (much heavier) lossless output.
 RECOMPRESS_QUALITY = env_int("SPYDF_RECOMPRESS_QUALITY", 80)
 
+# ---------- OCR ----------
+# Reading the images the way Chrome does (src/ocr.py). Longest side an image is
+# shrunk to before recognition: full scan resolution costs a lot and buys
+# nothing, the text is just as legible halved.
+OCR_MAX_SIDE = env_int("SPYDF_OCR_MAX_SIDE", 1600)
+OCR_MIN_SCORE = env_float("SPYDF_OCR_MIN_SCORE", 0.5)  # below this it is noise, not text
+OCR_MAX_IMAGES = env_int("SPYDF_OCR_MAX_IMAGES", 200)  # guard rail on a very long document
+OCR_SNIPPET = env_int("SPYDF_OCR_SNIPPET", 200)  # one fragment is a line, never a page
+# Higher than LEAK_COVERAGE, and for a reason: recognition returns whole lines,
+# not words, so a heading the zone's edge merely clips still overlaps it by a
+# fifth. A fragment that really survived inside a zone is covered almost
+# entirely. Between the two, anything from a third to a half would do.
+OCR_LEAK_COVERAGE = env_float("SPYDF_OCR_LEAK_COVERAGE", 0.6)
+# Opaque paint is only a cover when what it hides carries something: a patch
+# over blank paper hides nothing, and reporting it would flag every design.
+COVER_INK_DELTA = env_int("SPYDF_COVER_INK_DELTA", 48)  # channel distance counting as ink
+COVER_INK_RATIO = env_float("SPYDF_COVER_INK_RATIO", 0.005)  # of the area, before it counts
+COVER_PROBE_PX = env_int("SPYDF_COVER_PROBE_PX", 128)  # size the hidden area is probed at
+REVEAL_WIDTH = env_int("SPYDF_REVEAL_WIDTH", 900)  # px wide the hidden area is shown at
+REVEAL_MAX_ZOOM = env_float("SPYDF_REVEAL_MAX_ZOOM", 8.0)
+
+
+def ocr_verify() -> bool:
+    """Whether the export re-reads its own images to check nothing legible survives.
+
+    On by default, unlike most flags here: on an image-only document the
+    text-based check has nothing to look at, so turning this off exports a scan
+    verified by nothing at all.
+    """
+    return env_str("SPYDF_OCR_VERIFY", "1").lower() not in {"0", "false", "no", "off"}
+
+
 # ---------- watermark ----------
 WATERMARK_MAX_LEN = env_int("SPYDF_WATERMARK_MAX_LEN", 80)
 WATERMARK_MIN_SIZE = env_float("SPYDF_WATERMARK_MIN_SIZE", 8)

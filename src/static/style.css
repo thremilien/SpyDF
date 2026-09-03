@@ -317,6 +317,13 @@ header {
 /* an opaque cover: loud on purpose, it is the one trace that looks like an
    erasure on the left while removing nothing */
 .ig-cover { stroke: var(--accent); stroke-width: 1.6; fill: var(--accent); fill-opacity: .14; }
+/* text a reader recognises inside an image: faint while it is merely what the
+   page already shows, loud where a cover hides it and it stays readable anyway */
+.ig-ocr { stroke: var(--teal); stroke-width: .8; stroke-dasharray: 2 2; fill: none; }
+.ig-ocr.is-hidden {
+  stroke: var(--accent); stroke-width: 1.6; stroke-dasharray: none;
+  fill: var(--accent); fill-opacity: .18;
+}
 .ig-box.is-gone { stroke: #2f7a4d; fill: #2f7a4d; fill-opacity: .07; stroke-dasharray: 2 3; }
 .ig-item:hover .ig-box { stroke-width: 2; }
 .ig-zone { fill-opacity: .1; stroke-width: 1.2; vector-effect: non-scaling-stroke; stroke-dasharray: 4 3; }
@@ -330,6 +337,7 @@ header {
 .ig-legend-annot { background: #c58a2e33; border-color: #8a5210; }
 .ig-legend-zone { background: #7a2e3a1a; border-color: var(--accent); border-style: dashed; }
 .ig-legend-cover { background: #7a2e3a24; border-color: var(--accent); }
+.ig-legend-ocr { background: #2b5d6318; border-color: var(--teal); border-style: dashed; }
 .ig-legend-gone { background: #2f7a4d12; border-color: #2f7a4d; border-style: dashed; }
 
 .ins-summary {
@@ -355,6 +363,23 @@ header {
   font-family: var(--font-mono); font-size: 10px; letter-spacing: 0;
   background: #f1f3f0; color: var(--ink-soft); border-radius: 9px; padding: 1px 6px;
 }
+/* the one control the pane owns: it asks the server to read the images, or
+   hands over every cover at once. The pane still changes nothing by itself —
+   both end in ordinary zones on the left. */
+.ins-action {
+  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  margin: 6px 0 2px; padding: 5px 11px; border-radius: 7px;
+  color: var(--accent); background: var(--accent-soft); border: 1px solid #e3ccd2;
+}
+.ins-action:hover:not(:disabled) { background: #f0dde1; }
+.ins-action:disabled { cursor: default; opacity: .6; }
+
+/* what a cover hides, taken from the image itself: the claim, shown */
+.ins-reveal {
+  display: block; width: 100%; margin: 4px 0 8px; border-radius: 5px;
+  border: 1px solid var(--line); background: var(--paper);
+}
+
 .ins-none { font-size: 12px; color: var(--ink-faint); margin: 0; font-style: italic; }
 
 .ins-row {
@@ -364,7 +389,7 @@ header {
 }
 .ins-row:first-of-type { border-top: none; }
 .ins-label { color: var(--ink-faint); font-size: 11.5px; }
-.ins-value { color: var(--ink); overflow-wrap: anywhere; }
+.ins-value { color: var(--ink); overflow-wrap: anywhere; min-width: 0; }
 .ins-row.is-gone .ins-value { color: var(--ink-faint); text-decoration: line-through; }
 
 /* a row that does something when clicked (a cover: it hands you a zone) */

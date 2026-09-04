@@ -163,6 +163,12 @@ async function openFile(f) {
 function awaitFirstPage() {
   const pe = pageEls[0];
   if (!pe) { setBusy(false); updateStatus(); return; }
+  // Ask for the first page rather than waiting to be offered it. Every other
+  // request comes from the load observer, and a tab that is not in the
+  // foreground receives no observer callbacks at all — switching away while the
+  // upload runs is enough. The document then sits blank under "Rendering page
+  // 1" until the safety net below gives up, fifteen seconds later.
+  loadPage(0);
   let done = false;
   const finish = () => {
     if (done) return;

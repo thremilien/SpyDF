@@ -378,6 +378,14 @@ The image sets `HOST=0.0.0.0` so the app is reachable from outside the
 container; without it uvicorn would bind to the container's own loopback and
 the published port would answer nothing.
 
+It also installs `libxcb1`, `libgl1` and `libglib2.0-0`. The recognition engine
+pulls in OpenCV, which links against those even though nothing is ever
+displayed, and the slim base image does not carry them. Without them `import
+cv2` raises, the engine is unavailable, and every export goes out as a plain
+image with no text layer at all — a failure that looks like a broken export
+rather than a missing package. The server says which it is: it logs
+`event=ocr_unavailable error=...` once, the first time the engine is asked for.
+
 ### Deployed (Dokploy)
 
 `docker-compose.yml` is the deploy descriptor, built from the same Dockerfile.

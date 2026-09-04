@@ -16,9 +16,12 @@ The engine is optional: without it every function here returns empty and the
 export goes out as an image, which the report says.
 """
 
+import logging
+
 import fitz
 
 from src.config import OCR_MAX_SIDE, OCR_MIN_SCORE, OCR_SNIPPET
+from src.logs import log_event
 
 _engine = None  # built on first use: loading the models costs a second
 _engine_broken = False
@@ -42,8 +45,13 @@ def _get_engine():
         from rapidocr_onnxruntime import RapidOCR
 
         _engine = RapidOCR()
-    except Exception:
+    except Exception as e:
         _engine_broken = True
+        # The export degrades to a plain image and says so, but only here can it
+        # say *why*: without this line an operator sees a document come back
+        # with no text layer and has nothing to go on. It names the exception,
+        # never a document — the engine is loaded before any file is read.
+        log_event("ocr_unavailable", level=logging.WARNING, error=f"{type(e).__name__}: {e}")
     return _engine
 
 

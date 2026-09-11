@@ -18,6 +18,8 @@ the OCR only ever sees the bitmap *after* the zones are painted, so the text
 layer cannot describe what a zone hides.
 """
 
+from collections.abc import Callable
+
 import fitz
 
 from src import ocr
@@ -182,7 +184,12 @@ def _insert(new_page, pm):
         new_page.insert_image(new_page.rect, pixmap=pm)
 
 
-def flatten(data: bytes, zones_by_page: dict, deleted_pages: set) -> tuple[bytes, dict]:
+def flatten(
+    data: bytes,
+    zones_by_page: dict,
+    deleted_pages: set,
+    progress: Callable[[int, int], None] | None = None,
+) -> tuple[bytes, dict]:
     """Build the exported document: flat pages, painted zones, an OCR text layer.
 
     Args:
@@ -190,6 +197,8 @@ def flatten(data: bytes, zones_by_page: dict, deleted_pages: set) -> tuple[bytes
         zones_by_page: Zero-based page number -> parsed zones, as `src.app`
             builds them ({"points", "rect", "box", "mode", "color"}).
         deleted_pages: Zero-based page numbers to drop entirely.
+        progress: Called with (done, total) once each kept page is rendered,
+            painted and indexed; `total` counts only the pages not deleted.
 
     Returns:
         (the PDF bytes, a report): {"pages", "indexed", "fragments", "ocr"},
@@ -201,6 +210,7 @@ def flatten(data: bytes, zones_by_page: dict, deleted_pages: set) -> tuple[bytes
     out = fitz.open()
     pages = indexed = fragments = 0
     truncated = False
+    total = sum(1 for n in range(src.page_count) if n not in deleted_pages)
     try:
         for n, page in enumerate(src):
             if n in deleted_pages:
@@ -209,13 +219,13 @@ def flatten(data: bytes, zones_by_page: dict, deleted_pages: set) -> tuple[bytes
             new_page = out.new_page(width=page.rect.width, height=page.rect.height)
             _insert(new_page, pm)
             pages += 1
-            if not engine:
-                continue
-            if indexed >= OCR_MAX_PAGES:
+            if engine and indexed >= OCR_MAX_PAGES:
                 truncated = True
-                continue
-            fragments += ocr.write_layer(new_page, ocr.bitmap_words(pm))
-            indexed += 1
+            elif engine:
+                fragments += ocr.write_layer(new_page, ocr.bitmap_words(pm))
+                indexed += 1
+            if progress is not None:
+                progress(pages, total)
         # A new document carries almost nothing; these two make it nothing.
         out.set_metadata({})
         out.del_xml_metadata()

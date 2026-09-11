@@ -257,6 +257,121 @@ header {
 body.busy { cursor: progress; }
 body.busy .page-layer { cursor: progress; }
 
+/* ---------- export progress overlay ---------- */
+.xp-overlay {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+  background: #1c232140;
+  backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+  opacity: 0; transition: opacity .2s ease;
+}
+.xp-overlay[hidden] { display: none; }
+.xp-overlay.is-open { opacity: 1; }
+.xp-card {
+  width: 100%; max-width: 400px;
+  background: var(--paper); border: 1px solid var(--paper-edge); border-radius: 16px;
+  padding: 22px 24px 18px;
+  box-shadow: 0 2px 6px #0001, 0 18px 48px #0000002a;
+  transform: translateY(8px) scale(.98); transition: transform .25s ease;
+}
+.xp-overlay.is-open .xp-card { transform: none; }
+.xp-head { display: flex; align-items: center; gap: 18px; margin-bottom: 20px; }
+.xp-copy { min-width: 0; }
+.xp-title { font-family: var(--font-display); font-size: 19px; font-weight: 600; margin: 0 0 3px; }
+.xp-label { margin: 0; font-size: 13.5px; line-height: 1.5; color: var(--ink-soft); }
+
+/* The one bold element: a page thumbnail being flattened. Above the teal scan
+   line the text has become blocky pixels; the accent bar is a zone, painted
+   before anything is read. data-phase on the overlay drives it. */
+.xp-sheet {
+  --scan: 1.8s;
+  position: relative; flex: none; width: 62px; height: 80px; overflow: hidden;
+  background: var(--paper); border: 1px solid var(--paper-edge); border-radius: 2px;
+  box-shadow: 3px 3px 0 -1px var(--paper), 3px 3px 0 0 var(--paper-edge);
+}
+.xp-layer {
+  position: absolute; inset: 0; padding: 10px 9px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.xp-layer i { display: block; height: 3px; border-radius: 1.5px; background: var(--ink-faint); }
+.xp-layer i:nth-child(1) { width: 62%; background: var(--ink-soft); }
+.xp-layer i:nth-child(3) { width: 88%; }
+.xp-layer i:nth-child(4) { width: 70%; background: var(--accent); height: 7px; margin-block: -2px; border-radius: 0; }
+.xp-layer i:nth-child(5) { width: 94%; }
+.xp-layer i:nth-child(6) { width: 56%; }
+.xp-layer i:nth-child(7) { width: 78%; }
+/* the flattened copy: square, stepped runs of pixels instead of strokes */
+.xp-pixels { background: var(--paper); clip-path: inset(0 0 100% 0); }
+.xp-pixels i {
+  height: 4px; border-radius: 0;
+  background: repeating-linear-gradient(90deg,
+    var(--ink-soft) 0 4px, var(--ink-faint) 4px 8px, var(--paper-edge) 8px 10px);
+}
+.xp-pixels i:nth-child(1) { background: repeating-linear-gradient(90deg, var(--ink) 0 4px, var(--ink-soft) 4px 8px); }
+.xp-pixels i:nth-child(4) { height: 7px; background: var(--accent); }
+.xp-scan {
+  position: absolute; left: 0; right: 0; top: 0; height: 2px; opacity: 0;
+  background: var(--teal); box-shadow: 0 0 0 3px #2b5d6322, 0 -6px 10px #2b5d6318;
+}
+.xp-badge {
+  position: absolute; right: 4px; bottom: 4px; width: 20px; height: 20px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: #2f7a4d; color: #fff; opacity: 0; transform: scale(.5);
+  transition: opacity .2s ease, transform .3s cubic-bezier(.3, 1.6, .5, 1);
+}
+.xp-badge svg { width: 13px; height: 13px; }
+
+.xp-overlay[data-phase="pages"] .xp-pixels { animation: xp-flatten var(--scan) linear infinite; }
+.xp-overlay[data-phase="pages"] .xp-scan { animation: xp-sweep var(--scan) linear infinite; }
+.xp-overlay[data-phase="finishing"] .xp-pixels,
+.xp-overlay[data-phase="done"] .xp-pixels { clip-path: none; }
+.xp-overlay[data-phase="done"] .xp-badge { opacity: 1; transform: none; }
+@keyframes xp-flatten { from { clip-path: inset(0 0 100% 0); } to { clip-path: inset(0 0 0 0); } }
+@keyframes xp-sweep {
+  0% { top: 0; opacity: 0; } 8% { opacity: 1; } 92% { opacity: 1; } 100% { top: calc(100% - 2px); opacity: 0; }
+}
+/* each finished page slides off, and the next one comes in */
+.xp-sheet.turn { animation: xp-turn .35s cubic-bezier(.3, .7, .4, 1); }
+@keyframes xp-turn { from { transform: translateX(10px) rotate(2deg); opacity: .4; } to { transform: none; opacity: 1; } }
+
+.xp-bar {
+  position: relative; height: 6px; overflow: hidden;
+  background: var(--accent-soft); border-radius: 3px;
+}
+.xp-fill {
+  height: 100%; width: 0; border-radius: 3px; background: var(--accent);
+  transition: width .45s cubic-bezier(.3, .7, .4, 1), background .25s ease;
+}
+/* no count yet, or the tail of the job: a moving sheen instead of a width */
+.xp-bar.is-indeterminate .xp-fill { width: 100%; opacity: .2; }
+.xp-bar.is-indeterminate::after {
+  content: ''; position: absolute; inset: 0 auto 0 0; width: 34%;
+  background: var(--accent); border-radius: 3px;
+  animation: busy-slide 1.2s ease-in-out infinite;
+}
+.xp-foot {
+  display: flex; justify-content: space-between; gap: 12px; margin-top: 8px;
+  font-size: 12.5px; color: var(--ink-faint); font-variant-numeric: tabular-nums;
+}
+.xp-pct { color: var(--ink-soft); font-weight: 600; }
+.xp-overlay[data-phase="done"] .xp-fill { background: #2f7a4d; }
+
+@media (max-width: 480px) {
+  .xp-card { padding: 18px 18px 14px; }
+  .xp-head { gap: 14px; }
+  .xp-sheet { width: 52px; height: 68px; }
+  .xp-layer { padding: 8px 7px; gap: 5px; }
+}
+/* no sweep: the page sits half flattened, which still says what is happening */
+@media (prefers-reduced-motion: reduce) {
+  .xp-overlay, .xp-card, .xp-fill, .xp-badge { transition: none; }
+  .xp-card { transform: none; }
+  .xp-overlay[data-phase="pages"] .xp-pixels { animation: none; clip-path: inset(0 0 50% 0); }
+  .xp-overlay[data-phase="pages"] .xp-scan { animation: none; opacity: 1; top: calc(50% - 1px); }
+  .xp-sheet.turn { animation: none; }
+  .xp-bar.is-indeterminate::after { animation: none; width: 100%; opacity: .6; }
+}
+
 /* ---------- panning ---------- */
 /* Space held: the whole workspace becomes a hand, and the drawing layer stops
    claiming the pointer so a drag scrolls instead of drawing a zone. */

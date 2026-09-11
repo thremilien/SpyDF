@@ -155,5 +155,34 @@
   <button id="zoneDelete" class="zm-item danger" role="menuitem">Delete this zone</button>
 </div>
 
+<!-- export progress, shown by app.js while /api/export runs -->
+<div id="exportOverlay" class="xp-overlay" hidden>
+  <div class="xp-card" role="dialog" aria-modal="true" aria-labelledby="xpTitle" aria-describedby="xpLabel">
+    <div class="xp-head">
+      <!-- a page being flattened: text above the scan line has become pixels -->
+      <div id="xpSheet" class="xp-sheet" aria-hidden="true">
+        <div class="xp-layer xp-text"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <div class="xp-layer xp-pixels"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <span class="xp-scan"></span>
+        <span class="xp-badge">
+          <svg viewBox="0 0 16 16" fill="none"><path d="M3.8 8.4l2.7 2.7 5.7-6.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+      </div>
+      <div class="xp-copy">
+        <h2 id="xpTitle" class="xp-title">Exporting</h2>
+        <p id="xpLabel" class="xp-label" aria-live="polite">Preparing…</p>
+      </div>
+    </div>
+    <div id="xpBar" class="xp-bar" role="progressbar" aria-label="Export progress"
+         aria-valuemin="0" aria-valuemax="100">
+      <div id="xpFill" class="xp-fill"></div>
+    </div>
+    <div class="xp-foot">
+      <span id="xpCount" class="xp-count"></span>
+      <span id="xpPct" class="xp-pct"></span>
+    </div>
+  </div>
+</div>
+
 <script src="/static/app.js"></script>
 </body></html>

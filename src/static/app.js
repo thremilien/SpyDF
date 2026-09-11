@@ -1262,12 +1262,12 @@ document.addEventListener('pointerdown', e => {
 });
 
 function syncButtons() {
-  const total = Object.values(zones).reduce((a, b) => a + b.length, 0);
   const n = (zones[activePage] || []).length;
   $('undo').disabled = busy || history.length === 0;
   $('redo').disabled = busy || redoStack.length === 0;
   $('clear').disabled = busy || !n;
-  $('export').disabled = busy || !(total || deletedPages.size || watermarkValue());
+  // an untouched document exports too: it is still flattened and re-read
+  $('export').disabled = busy || !sid;
   updateZoomUI();
 }
 
@@ -1286,10 +1286,107 @@ function updateStatus() {
     : 'No document.');
 }
 
+// ---------- export progress ----------
+// The export is one long POST; a second endpoint says how far it has got, and
+// the overlay shows it. A failed poll is ignored: the POST alone decides the end.
+const xp = {
+  el: $('exportOverlay'), bar: $('xpBar'), fill: $('xpFill'),
+  label: $('xpLabel'), title: $('xpTitle'), count: $('xpCount'), pct: $('xpPct'),
+  sheet: $('xpSheet'), timer: null, hideTimer: null, lastFocus: null, lastDone: -1,
+};
+
+// restart the sheet's slide-in: one finished page, the next one comes in
+function xpTurn() {
+  xp.sheet.classList.remove('turn');
+  void xp.sheet.offsetWidth;
+  xp.sheet.classList.add('turn');
+}
+
+function xpRender(p) {
+  const known = p && p.total > 0;
+  const tail = p && (p.phase === 'starting' || p.phase === 'finishing');
+  const indeterminate = !known || tail || !p;
+  // the sheet only sweeps while pages are actually being read
+  xp.el.dataset.phase = p && p.phase === 'pages' && known ? 'pages'
+    : p && p.phase === 'finishing' ? 'finishing' : 'starting';
+  if (known && p.phase === 'pages' && p.done !== xp.lastDone) {
+    if (xp.lastDone >= 0) xpTurn();
+    xp.lastDone = p.done;
+  }
+  xp.bar.classList.toggle('is-indeterminate', indeterminate);
+  if (p && p.phase === 'finishing') {
+    xp.label.textContent = 'Finishing the document…';
+  } else if (known && p.phase === 'pages') {
+    const page = Math.min(p.done + 1, p.total);
+    xp.label.textContent = `Flattening and reading page ${page} of ${p.total}`;
+  } else {
+    xp.label.textContent = 'Preparing…';
+  }
+  if (indeterminate) {
+    xp.bar.removeAttribute('aria-valuenow');
+    xp.pct.textContent = '';
+  } else {
+    const v = Math.round(100 * p.done / p.total);
+    xp.fill.style.width = v + '%';
+    xp.bar.setAttribute('aria-valuenow', v);
+    xp.pct.textContent = v + '%';
+  }
+  xp.count.textContent = known ? `${p.done} of ${p.total} pages done` : '';
+}
+
+async function xpPoll() {
+  try {
+    const r = await fetch(`/api/export/progress/${sid}`);
+    if (signedOut(r.status)) return;
+    if (r.ok && xp.timer) xpRender(await r.json());
+  } catch { /* the POST reports the real failure */ }
+}
+
+function xpOpen() {
+  clearTimeout(xp.hideTimer);
+  xp.lastFocus = document.activeElement;
+  xp.lastDone = -1;
+  xp.sheet.classList.remove('turn');
+  xp.title.textContent = 'Exporting';
+  xp.fill.style.width = '0%';
+  xpRender(null);
+  xp.el.hidden = false;
+  requestAnimationFrame(() => xp.el.classList.add('is-open'));
+  xp.el.querySelector('.xp-card').tabIndex = -1;
+  xp.el.querySelector('.xp-card').focus();
+  xp.timer = setInterval(xpPoll, 450);
+  xpPoll();
+}
+
+// ok: hold a full, checked bar for a moment before fading out
+function xpClose(ok, pages) {
+  clearInterval(xp.timer); xp.timer = null;
+  const fade = () => {
+    xp.el.classList.remove('is-open');
+    xp.hideTimer = setTimeout(() => {
+      xp.el.hidden = true;
+      if (xp.lastFocus && xp.lastFocus.focus) xp.lastFocus.focus();
+    }, 220);
+  };
+  if (!ok) { fade(); return; }
+  xp.bar.classList.remove('is-indeterminate');
+  xp.fill.style.width = '100%';
+  xp.bar.setAttribute('aria-valuenow', 100);
+  xp.pct.textContent = '100%';
+  // the last page can finish between two polls: the count comes from the answer
+  if (pages) xp.count.textContent = `${pages} of ${pages} pages done`;
+  xp.title.textContent = 'Exported';
+  xp.label.textContent = 'The download is starting.';
+  xp.el.dataset.phase = 'done';
+  xp.hideTimer = setTimeout(fade, 900);
+}
+
 // ---------- export ----------
 $('export').onclick = async () => {
   if (busy) return;   // the button stayed live: a double-click exported twice
   setBusy(true, 'Processing…');
+  xpOpen();
+  let ok = false, pages = 0;
   try {
     const r = await fetch('/api/export', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1308,6 +1405,7 @@ $('export').onclick = async () => {
     const d = await r.json();
     const a = document.createElement('a'); a.href = d.download; a.download = d.filename;
     document.body.appendChild(a); a.click(); a.remove();
+    ok = true; pages = d.pages;
     setBusy(false);
     if (d.ocr === 'ok') {
       setStatus(`Export done: ${d.pages} page(s) flattened and reindexed (${d.fragments} text fragments).`, 'ok');
@@ -1319,6 +1417,8 @@ $('export').onclick = async () => {
   } catch (err) {
     setBusy(false);
     setStatus('Error: ' + (err.message || 'server unreachable'), 'warn');
+  } finally {
+    xpClose(ok, pages);
   }
 };
 
@@ -1381,9 +1481,8 @@ async function restoreState() {
 
 restoreState();
 
-// Preview and Export button follow the watermark field live. The button reacts
-// on every keystroke, the preview waits for a pause: redrawing every page on
-// each key makes typing stutter on a long document.
+// The preview follows the watermark field once typing pauses: redrawing every
+// page on each key makes typing stutter on a long document.
 let wmTimer = null;
 $('wm').addEventListener('input', () => {
   updateStatus();

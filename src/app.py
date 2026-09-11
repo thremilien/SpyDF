@@ -67,6 +67,9 @@ app = FastAPI()
 app.mount("/static", StaticFiles(directory=PACKAGE_DIR / "static"), name="static")
 
 DOCS: dict[str, dict] = {}  # sid -> {"bytes": ..., "name": ..., "ts": ...}
+# sid -> {"done", "total", "phase"} while an export of that session runs; each
+# update swaps in a fresh dict, so a reader never sees one half-written.
+EXPORTS: dict[str, dict] = {}
 
 
 def _sweep():
@@ -684,18 +687,32 @@ async def api_export(request: Request, payload: dict):
         )
         raise HTTPException(400, "cannot delete every page")
 
-    # Rendering and recognition are both slow and both CPU-bound: off the event
-    # loop, or one export freezes every other session.
-    out, report = await run_in_threadpool(flatten, entry["bytes"], zones_by_page, deleted_pages)
+    sid = payload["sid"]
+    total = sum(1 for n in range(page_count) if n not in deleted_pages)
 
-    # The watermark is stamped last, on the flattened pages: it is the one thing
-    # in the exported file that is real text rather than pixels, and it has to
-    # stay out of the bitmap the recognition was given.
-    if watermark:
-        out = _apply_watermark(out, watermark)
+    # Called from the threadpool thread after each page.
+    def progress(done: int, total: int) -> None:
+        EXPORTS[sid] = {"done": done, "total": total, "phase": "pages"}
 
-    base = os.path.splitext(entry["name"])[0] or "document"
-    key = _put(f"{base}_redacted.pdf", out)
+    EXPORTS[sid] = {"done": 0, "total": total, "phase": "starting"}
+    try:
+        # Rendering and recognition are both slow and both CPU-bound: off the
+        # event loop, or one export freezes every other session.
+        out, report = await run_in_threadpool(
+            flatten, entry["bytes"], zones_by_page, deleted_pages, progress
+        )
+        EXPORTS[sid] = {"done": total, "total": total, "phase": "finishing"}
+
+        # The watermark is stamped last, on the flattened pages: it is the one
+        # thing in the exported file that is real text rather than pixels, and it
+        # has to stay out of the bitmap the recognition was given.
+        if watermark:
+            out = _apply_watermark(out, watermark)
+
+        base = os.path.splitext(entry["name"])[0] or "document"
+        key = _put(f"{base}_redacted.pdf", out)
+    finally:
+        EXPORTS.pop(sid, None)
 
     # Privacy rule: the watermark is free text typed by the operator and the
     # text layer is the document's own content. Only counts are logged, never a
@@ -720,6 +737,30 @@ async def api_export(request: Request, payload: dict):
             **report,
         }
     )
+
+
+@app.get("/api/export/progress/{sid}")
+def api_export_progress(sid: str):
+    """Report how far the running export of a session has got.
+
+    `POST /api/export` answers only once the whole document is built, which on a
+    long scan takes minutes; the client polls this meanwhile to draw a bar.
+
+    Args:
+        sid: Session id.
+
+    Returns:
+        {"active", "done", "total", "phase"}: `phase` is "starting", "pages" or
+        "finishing" during an export, "idle" (with zeros) when none runs.
+
+    Raises:
+        HTTPException: 404 for an unknown or expired session.
+    """
+    _get(sid)
+    state = EXPORTS.get(sid)
+    if state is None:
+        return {"active": False, "done": 0, "total": 0, "phase": "idle"}
+    return {"active": True, **state}
 
 
 # Serves an exported PDF as an attachment.

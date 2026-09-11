@@ -115,12 +115,12 @@ MOSAIC_BLOCKS = env_int("SPYDF_MOSAIC_BLOCKS", 14)  # pixelated zone width, in "
 # ---------- export ----------
 # Every page is rendered flat before it is written back, which is what makes an
 # export carry nothing but its pixels. The resolution is therefore the quality
-# of the exported document, and the input to the OCR that re-indexes it: 200 dpi
-# puts an A4 at about 1654 x 2339, legible and readable by the engine.
-EXPORT_DPI = env_int("SPYDF_EXPORT_DPI", 200)
-# JPEG quality of the flattened pages; 0 keeps them lossless, which multiplies
-# the size of a scan by five or six.
-EXPORT_JPEG_QUALITY = env_int("SPYDF_EXPORT_JPEG_QUALITY", 80)
+# of the exported document, and the input to the OCR that re-indexes it: 300 dpi
+# puts an A4 at about 2480 x 3508, print quality, near the scan it came from.
+EXPORT_DPI = env_int("SPYDF_EXPORT_DPI", 300)
+# JPEG quality of the flattened pages; 95 is near-lossless to the eye, 0 keeps
+# them truly lossless, which multiplies the size of a scan by five or six.
+EXPORT_JPEG_QUALITY = env_int("SPYDF_EXPORT_JPEG_QUALITY", 95)
 
 # ---------- OCR ----------
 # The export reads back the pages it has just flattened and lays the recognised

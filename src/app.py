@@ -32,6 +32,7 @@ from src.auth import (
     note_success,
     token_is_valid,
 )
+from src.background import page_background
 from src.config import (
     AUTH_TTL,
     EXPORT_DPI,
@@ -66,7 +67,7 @@ mimetypes.add_type("text/css", ".css")
 app = FastAPI()
 app.mount("/static", StaticFiles(directory=PACKAGE_DIR / "static"), name="static")
 
-DOCS: dict[str, dict] = {}  # sid -> {"bytes": ..., "name": ..., "ts": ...}
+DOCS: dict[str, dict] = {}  # sid -> {"bytes", "name", "ts", "pages"}
 # sid -> {"done", "total", "phase"} while an export of that session runs; each
 # update swaps in a fresh dict, so a reader never sees one half-written.
 EXPORTS: dict[str, dict] = {}
@@ -85,11 +86,11 @@ def _sweep():
         DOCS.pop(min(DOCS, key=lambda k: DOCS[k]["ts"]), None)
 
 
-# Stores a document under a fresh session id and returns it.
-def _put(name: str, data: bytes) -> str:
+# Stores a document (and, for an opened one, its page geometry) under a fresh id.
+def _put(name: str, data: bytes, pages: list[dict] | None = None) -> str:
     _sweep()
     key = uuid.uuid4().hex
-    DOCS[key] = {"bytes": data, "name": name, "ts": time.time()}
+    DOCS[key] = {"bytes": data, "name": name, "ts": time.time(), "pages": pages}
     return key
 
 
@@ -286,12 +287,49 @@ def logout(request: Request):
 
 
 def _page_geometry(doc) -> list[dict]:
-    """The rectangle of every page, which is what the client lays its zones on."""
-    return [{"w": p.rect.width, "h": p.rect.height, "x0": p.rect.x0, "y0": p.rect.y0} for p in doc]
+    """What the client needs of every page: its rectangle and its paper colour.
+
+    The rectangle is what the zones are laid on; the colour, `bg` as three 0-255
+    channels, is the default fill of a delete zone drawn on that page.
+    """
+    return [
+        {
+            "w": p.rect.width,
+            "h": p.rect.height,
+            "x0": p.rect.x0,
+            "y0": p.rect.y0,
+            "bg": list(page_background(p)),
+        }
+        for p in doc
+    ]
+
+
+def _inspect(data: bytes) -> list[dict]:
+    """Open an uploaded PDF and read its page geometry.
+
+    Args:
+        data: The uploaded bytes.
+
+    Returns:
+        The geometry of every page, as `_page_geometry` gives it.
+
+    Raises:
+        HTTPException: 400 for a password-protected PDF.
+        Exception: Whatever PyMuPDF raises on bytes it cannot read.
+    """
+    doc = fitz.open(stream=data, filetype="pdf")
+    try:
+        # An encrypted PDF opens, but its pages are unreadable: without the
+        # password nothing could be rendered or redacted.
+        if doc.needs_pass:
+            raise HTTPException(400, "password-protected PDF")
+        return _page_geometry(doc)
+    finally:
+        doc.close()
 
 
 @app.get("/api/session/{sid}")
-def api_session(sid: str):
+async def api_session(sid: str):
     """Report a still-open session, so a reloaded page can pick it up again.
 
     A browser reload loses the session id and the page geometry, but not the
@@ -310,10 +348,9 @@ def api_session(sid: str):
         HTTPException: 404 for an unknown or expired session.
     """
     entry = _get(sid)
-    doc = fitz.open(stream=entry["bytes"], filetype="pdf")
-    pages = _page_geometry(doc)
-    doc.close()
-    return {"sid": sid, "name": entry["name"], "pages": pages}
+    if entry.get("pages") is None:
+        entry["pages"] = await run_in_threadpool(_inspect, entry["bytes"])
+    return {"sid": sid, "name": entry["name"], "pages": entry["pages"]}
 
 
 @app.post("/api/open")
@@ -325,7 +362,8 @@ async def api_open(request: Request, file: UploadFile = File(...)):
         file: The uploaded PDF.
 
     Returns:
-        {"sid": session id, "name": sanitised name, "pages": page geometry}.
+        {"sid": session id, "name": sanitised name, "pages": page geometry
+        and paper colour}.
 
     Raises:
         HTTPException: 400 empty, unreadable or password-protected, 413 too big.
@@ -346,18 +384,12 @@ async def api_open(request: Request, file: UploadFile = File(...)):
         )
         raise HTTPException(413, "file too large (200 MB maximum)")
     try:
-        doc = fitz.open(stream=data, filetype="pdf")
-        # An encrypted PDF opens, but its pages are unreadable: without the
-        # password nothing could be rendered or redacted.
-        if doc.needs_pass:
-            doc.close()
-            log_event(
-                "import_rejected", level=logging.WARNING, reason="password_protected", **ip_fields
-            )
-            raise HTTPException(400, "password-protected PDF")
-        pages = _page_geometry(doc)
-        doc.close()
+        # Reading every page's paper colour renders each one: off the event loop.
+        pages = await run_in_threadpool(_inspect, data)
     except HTTPException:
+        log_event(
+            "import_rejected", level=logging.WARNING, reason="password_protected", **ip_fields
+        )
         raise
     except Exception as e:
         # The exception text can in principle quote file content, so it is not
@@ -366,7 +398,7 @@ async def api_open(request: Request, file: UploadFile = File(...)):
         raise HTTPException(400, f"unreadable PDF: {e}") from e
 
     name = _safe_filename(file.filename or "document.pdf")
-    sid = _put(name, data)
+    sid = _put(name, data, pages)
 
     # Privacy rule: an uploaded file name is potentially identifying
     # ("copie_jean_dupont.pdf"), so it is logged only when the operator asked

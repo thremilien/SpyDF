@@ -112,6 +112,21 @@ MAX_ZOOM = env_float("SPYDF_MAX_ZOOM", 8.0)  # memory guard rail: 8x on A4 = ~12
 # being filled row by row, exactly along the drawn outline.
 MOSAIC_BLOCKS = env_int("SPYDF_MOSAIC_BLOCKS", 14)  # pixelated zone width, in "big pixels"
 
+# ---------- background colour ----------
+# Each page's paper colour is read once, when the document is opened, and is the
+# default fill of a delete zone. The page is rendered this small for it: the
+# paper covers most of it, so a few hundred pixels a side read it as well as a
+# full render, at a fraction of the cost.
+BG_SAMPLE_SIDE = env_int("SPYDF_BG_SAMPLE_SIDE", 160)
+# Bits kept per channel when sorting pixels into buckets: 4 gives buckets 16
+# levels wide, broad enough to hold a scan's paper grain, narrow enough to keep
+# grey text edges out of it.
+BG_BUCKET_BITS = min(8, max(1, env_int("SPYDF_BG_BUCKET_BITS", 4)))
+BG_CANDIDATES = env_int("SPYDF_BG_CANDIDATES", 8)  # fullest buckets weighed with their neighbours
+# Half-width, in levels per channel, of the window the estimate is refined in: a
+# scan's paper grain fits inside it, the grey edges of its text do not.
+BG_RADIUS = env_int("SPYDF_BG_RADIUS", 12)
+
 # ---------- export ----------
 # Every page is rendered flat before it is written back, which is what makes an
 # export carry nothing but its pixels. The resolution is therefore the quality

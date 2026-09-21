@@ -62,8 +62,10 @@ Each zone has a mode, switched from its right-click menu:
   unreadable mosaic taken before anything else is painted.
 
 The fill of a **delete** zone is painted in the colour of the paper it was
-drawn on: the average of the pixels its outline passes over — the outline, not
-the inside, which is the content about to go. On a coloured or greyish scan a
+drawn on. Each page's paper colour is read once, when the document is opened:
+the colour most of the page shares, not its average, so lines of text do not
+turn it grey and a zone drawn tight against black ink is not filled with a
+smudge of it. On a coloured or greyish scan a
 white patch is itself a mark, it says where something was; matching the paper
 leaves nothing to notice. The zone's right-click menu holds that colour as
 three **RGB** numbers and a **pipette** that takes a colour from a click

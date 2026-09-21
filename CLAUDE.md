@@ -39,6 +39,8 @@ allowed a one-line comment instead of a docstring.
 - `src/app.py` — the FastAPI app and all `/api/*` routes
 - `src/flatten.py` — the export: pages rendered flat, zones painted into the
   pixels, a new document built from them
+- `src/background.py` — each page's paper colour, the default fill of a
+  delete zone
 - `src/ocr.py` — the recognition that reads a flattened page back and lays its
   text over the page as invisible ink
 - `src/server.py` — uvicorn bootstrap
@@ -96,10 +98,12 @@ allowed a one-line comment instead of a docstring.
   `/api/export` calls `flatten` through `run_in_threadpool`, or one export
   freezes every other session.
 - A delete zone carries a colour (`color: [r, g, b]`, 0-255) and the fill uses
-  it. The default is sampled client-side from the rendered page along the zone's
-  outline (`contourColor` in `src/static/app.js`) — a white fill on coloured
-  paper advertises the redaction. Anything unusable falls back to white
-  server-side, so an older client keeps working.
+  it. The default is the page's paper colour, read once per page at
+  `/api/open` (`src/background.py`) and handed to the client as `pages[i].bg` —
+  a white fill on coloured paper advertises the redaction. It is the *mode* of
+  the page's colours, never a mean, and never sampled around the zone: either of
+  those turns grey as soon as text is near. Anything unusable falls back to
+  white server-side, so an older client keeps working.
 - The optional watermark is stamped *after* flattening, not before: it is the
   one thing in the exported file that is real text rather than pixels, and
   stamping it earlier would put it in the bitmap the recognition is given, where

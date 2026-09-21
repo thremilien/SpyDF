@@ -701,10 +701,8 @@ function wireLayer(i, svg) {
 
 // ---------- the cover colour ----------
 // A white cover on a coloured scan is itself a mark: it says "something was
-// here". The default is read from the paper the outline was drawn over — the
-// pixels the stroke passes over, not the ones inside it, which are the content
-// about to disappear.
-const CONTOUR_SAMPLES = 96;
+// here". The default is the page's paper colour, read by the server when the
+// document was opened (`pages[i].bg`, see src/background.py).
 const WHITE_RGB = [255, 255, 255];
 let pageCanvas = { src: null, ctx: null, w: 0, h: 0 };
 
@@ -745,35 +743,14 @@ function pixelAt(i, x, y) {
   } catch { return null; }
 }
 
-// Walks the outline at a constant step and averages what it crosses.
-function contourColor(i, points) {
-  const cv = pageContext(i);
-  if (!cv || points.length < 2) return WHITE_RGB;
-  const edges = [];
-  let total = 0;
-  for (let k = 0; k < points.length; k++) {
-    const a = points[k], b = points[(k + 1) % points.length];
-    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
-    edges.push([a, b, len]);
-    total += len;
-  }
-  if (!total) return WHITE_RGB;
-  let r = 0, g = 0, bl = 0, n = 0;
-  for (const [a, b, len] of edges) {
-    const steps = Math.max(1, Math.round(CONTOUR_SAMPLES * len / total));
-    for (let s = 0; s < steps; s++) {
-      const t = s / steps;
-      const px = pixelAt(i, a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t);
-      if (!px) continue;
-      r += px[0]; g += px[1]; bl += px[2]; n++;
-    }
-  }
-  if (!n) return WHITE_RGB;
-  return [Math.round(r / n), Math.round(g / n), Math.round(bl / n)];
+// The paper of page i: the default fill of every delete zone drawn on it.
+function pageBackground(i) {
+  const bg = pages[i] && pages[i].bg;
+  return Array.isArray(bg) && bg.length === 3 ? [...bg] : [...WHITE_RGB];
 }
 
 function addZone(i, zone) {
-  if (!zone.color) zone.color = contourColor(i, zone.points);
+  if (!zone.color) zone.color = pageBackground(i);
   pushHistory();
   (zones[i] = zones[i] || []).push(zone);
   activePage = i;

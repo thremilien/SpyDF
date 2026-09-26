@@ -505,6 +505,7 @@ function renderZones(i) {
   });
 
   drawWatermarkPreview(svg, i);
+  scheduleLoupe();
 
   // re-rendering destroys the focused element: give it the focus back
   if (selEl && keyboardNav && !menu.contains(document.activeElement)) {
@@ -1186,10 +1187,140 @@ $('clear').onclick = () => {
   renderZones(activePage); updateStatus();
 };
 
+// ---------- copy / paste ----------
+// An in-app clipboard: a zone is geometry on this document's pages, meaningless
+// to any other application, and reading the system clipboard back would need a
+// permission prompt.
+const PASTE_OFFSET = 12;   // PDF points each further paste on a page is shifted by
+let clipboard = null;      // {page, zone}: the page it was copied from, a deep copy
+let pastes = {};           // page -> pastes made there since the copy
+let pointerPage = null;    // the page under the cursor, if any
+
+function typing() {
+  const a = document.activeElement;
+  return !!a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable);
+}
+
+function copySelected() {
+  const z = zones[selected.page][selected.index];
+  clipboard = { page: selected.page, zone: JSON.parse(JSON.stringify(z)) };
+  pastes = {};
+  setStatus('Zone copied: Ctrl+V pastes it on the page under the cursor.');
+}
+
+function cutSelected() {
+  copySelected();
+  // the first paste of a cut zone lands back exactly where it was
+  pastes = { [clipboard.page]: -1 };
+  deleteSelected();
+}
+
+// Onto the page under the cursor, else the current one. On the page it came
+// from the copy is shifted so it does not hide under its original; on another
+// page it lands at the same place. Either way it is kept inside the page.
+function pasteZone() {
+  const i = pointerPage !== null ? pointerPage : activePage;
+  const p = pages[i];
+  if (!p || deletedPages.has(i)) return;
+  const n = pastes[i] || 0;
+  pastes[i] = n + 1;
+  const shift = PASTE_OFFSET * (n + (i === clipboard.page ? 1 : 0));
+  const z = JSON.parse(JSON.stringify(clipboard.zone));
+  const [x0, y0, x1, y1] = bbox(z.points);
+  const dx = Math.max(p.x0 - x0, Math.min(shift, p.x0 + p.w - x1));
+  const dy = Math.max(p.y0 - y0, Math.min(shift, p.y0 + p.h - y1));
+  z.points = z.points.map(([x, y]) => [x + dx, y + dy]);
+  addZone(i, z);
+  keyboardNav = false;
+  closeMenu();
+  select(i, zones[i].length - 1);
+}
+
+// ---------- magnifier ----------
+// Held on Z: a lens over the cursor showing the page and its zones enlarged,
+// to draw an outline tight against the text. It never takes the pointer, so
+// drawing and dragging go on underneath it.
+const LOUPE_ZOOM = 3;
+const LOUPE_SIZE = 240;    // CSS px, as .loupe in style.css
+const LOUPE_RELOAD = 1.15; // a sharper render only when it gains that much
+const loupe = $('loupe'), loupeView = $('loupeView'), loupeImg = $('loupeImg');
+let loupeOn = false, loupeFrame = 0, loupeLayer = null, lastClient = null;
+const sharpPages = new Map();   // `${sid}/${page}` -> {w, img}, rendered for the lens
+
+// The page as rendered for the screen is too coarse once enlarged: the lens
+// asks for one LOUPE_ZOOM times wider, and shows the screen one until it lands.
+function loupeSrc(i, pe) {
+  const w = wantedWidth(pe) * LOUPE_ZOOM;
+  const key = `${sid}/${i}`;
+  let hit = sharpPages.get(key);
+  if (!hit || w > hit.w * LOUPE_RELOAD) {
+    const img = new Image();
+    const entry = { w, img, prev: hit };   // the older one shows until this lands
+    img.onload = () => { entry.prev = null; scheduleLoupe(); };
+    img.src = `/api/page/${sid}/${i}?w=${w}`;
+    hit = entry;
+    sharpPages.set(key, hit);
+  }
+  for (let h = hit; h; h = h.prev) {
+    if (h.img.complete && h.img.naturalWidth) return h.img.src;
+  }
+  return pe.img.src;
+}
+
+function setLoupe(on) {
+  if (loupeOn === on) return;
+  loupeOn = on;
+  loupe.hidden = !on;
+  if (on) scheduleLoupe();
+  else if (loupeLayer) { loupeLayer.remove(); loupeLayer = null; }
+}
+
+// once a frame at most, and after every other handler of the event has run:
+// a shape being drawn is updated by the same pointermove
+function scheduleLoupe() {
+  if (loupeOn && !loupeFrame) loupeFrame = requestAnimationFrame(drawLoupe);
+}
+
+function drawLoupe() {
+  loupeFrame = 0;
+  if (!loupeOn || !lastClient) return;
+  const { x, y } = lastClient;
+  loupe.style.left = `${x - LOUPE_SIZE / 2}px`;
+  loupe.style.top = `${y - LOUPE_SIZE / 2}px`;
+  const hit = document.elementFromPoint(x, y);
+  const cont = hit && hit.closest('.page-container');
+  const pe = cont && pageEls[+cont.dataset.page];
+  loupeView.hidden = !pe;
+  if (!pe) return;
+  const r = pe.svg.getBoundingClientRect();
+  loupeView.style.width = `${r.width * LOUPE_ZOOM}px`;
+  loupeView.style.height = `${r.height * LOUPE_ZOOM}px`;
+  loupeView.style.left = `${LOUPE_SIZE / 2 - (x - r.left) * LOUPE_ZOOM}px`;
+  loupeView.style.top = `${LOUPE_SIZE / 2 - (y - r.top) * LOUPE_ZOOM}px`;
+  loupeView.classList.toggle('deleted', pe.container.classList.contains('deleted'));
+  const src = loupeSrc(+cont.dataset.page, pe);
+  if (src && loupeImg.getAttribute('src') !== src) loupeImg.src = src;
+  // the zones, handles and shapes being drawn, as they are right now
+  const layer = pe.svg.cloneNode(true);
+  if (loupeLayer) loupeLayer.replaceWith(layer); else loupeView.appendChild(layer);
+  loupeLayer = layer;
+}
+
+window.addEventListener('pointermove', e => {
+  lastClient = { x: e.clientX, y: e.clientY };
+  const cont = e.target.closest && e.target.closest('.page-container');
+  pointerPage = cont ? +cont.dataset.page : null;
+  scheduleLoupe();
+});
+stageEl.addEventListener('scroll', scheduleLoupe, { passive: true });
+
 window.addEventListener('keydown', e => {
   if (!sid) return;
   const mod = e.ctrlKey || e.metaKey;
   const k = (e.key || '').toLowerCase();
+  // Ctrl pressed while Z is held for the magnifier: the auto-repeat of Z
+  // would otherwise turn into a stream of undos
+  if (mod && k === 'z' && e.repeat && loupeOn) { e.preventDefault(); return; }
   // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y — insensitive to Shift and Caps Lock
   if (mod && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (mod && k === 'y') { e.preventDefault(); redo(); return; }
@@ -1198,7 +1329,12 @@ window.addEventListener('keydown', e => {
   if (mod && (k === '+' || k === '=' || k === 'add')) { e.preventDefault(); zoomFromKeyboard(1); return; }
   if (mod && (k === '-' || k === '_' || k === 'subtract')) { e.preventDefault(); zoomFromKeyboard(-1); return; }
   if (mod && k === '0') { e.preventDefault(); zoomFromKeyboard(0); return; }
+  // a field keeps its own copy and paste
+  if (mod && k === 'c' && !typing() && selected) { e.preventDefault(); copySelected(); return; }
+  if (mod && k === 'x' && !typing() && selected) { e.preventDefault(); cutSelected(); return; }
+  if (mod && k === 'v' && !typing() && clipboard) { e.preventDefault(); pasteZone(); return; }
   if (mod) return;
+  if (k === 'z' && !e.altKey && !typing()) { e.preventDefault(); setLoupe(true); return; }
   const idle = !document.activeElement || document.activeElement === document.body;
   if (e.code === 'Space' && idle) { e.preventDefault(); setPanReady(true); return; }
   if (idle && menu.hidden && panKey(e)) { e.preventDefault(); return; }
@@ -1216,9 +1352,13 @@ window.addEventListener('keydown', e => {
 });
 // the key can be released over another window, or the window lose the focus
 // mid-pan: either way the hand cursor must not stay on
-window.addEventListener('keyup', e => { if (e.code === 'Space') setPanReady(false); });
+window.addEventListener('keyup', e => {
+  if (e.code === 'Space') setPanReady(false);
+  if ((e.key || '').toLowerCase() === 'z') setLoupe(false);
+});
 window.addEventListener('blur', () => {
   setPanReady(false);
+  setLoupe(false);
   document.body.classList.remove('panning');
 });
 // handles have a fixed on-screen size: they must be redrawn on resize

@@ -122,16 +122,23 @@
       <li>Pick a shape and draw on the page. A polygon closes on <b>double-click</b>.</li>
       <li>Drag a zone to move it, or its handles to resize it.</li>
       <li><b>Right-click</b> a zone to change its mode or delete it. <b>Ctrl+Z</b> undoes, <b>Ctrl+Y</b> redoes.</li>
+      <li><b>Ctrl+C</b> copies the selected zone, <b>Ctrl+X</b> cuts it, and <b>Ctrl+V</b> pastes it onto the page under the cursor — same place on another page, slightly shifted on its own.</li>
+      <li>Hold <b>Z</b> for a magnifier around the cursor; you can keep drawing underneath it.</li>
       <li>From the keyboard: <b>Tab</b> moves between zones, <b>Enter</b> opens the zone menu, <b>Delete</b> removes it.</li>
       <li><b>Ctrl+wheel</b> or <b>Ctrl</b> with <b>+</b> / <b>−</b> / <b>0</b> zooms the page. Drag with the <b>middle button</b> or hold <b>Space</b> to move around, arrows and <b>Page Up/Down</b> too.</li>
       <li>What disappears follows the <b>drawn outline</b>, polygons and freehand included: nothing outside it is erased or covered.</li>
       <li><b>Delete</b> erases the content; <b>Pixelate</b> leaves nothing but an unreadable mosaic.</li>
-      <li>A delete zone is covered in the colour of the paper it was drawn on, averaged along its outline. Change it in the zone menu — three <b>RGB</b> numbers, or the <b>pipette</b> to take a colour from a click on the page.</li>
+      <li>A delete zone is covered in the colour of the paper it was drawn on. Change it in the zone menu — three <b>RGB</b> numbers, or the <b>pipette</b> to take a colour from a click on the page.</li>
       <li>Reloading the page keeps the document and its zones: they are picked up again as long as the tab stays open and the document has not expired on the server.</li>
       <li>A <b>watermark</b> (typed in the field next to Export) is stamped diagonally across every exported page; a preview appears on the pages as you type.</li>
       <li>Export renders every page flat and re-reads it: the result is an image of the document with a text layer put back by OCR, and carries nothing else — no metadata, no annotation, no hidden text.</li>
     </ul>
   </div>
+</div>
+
+<!-- the magnifier, held on Z; drawn by app.js -->
+<div id="loupe" class="loupe" hidden inert aria-hidden="true">
+  <div id="loupeView" class="loupe-view"><img id="loupeImg" class="page-img" alt=""></div>
 </div>
 
 <div id="zoneMenu" hidden role="menu" aria-label="Zone actions">

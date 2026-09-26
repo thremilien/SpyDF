@@ -133,6 +133,12 @@ BG_RADIUS = env_int("SPYDF_BG_RADIUS", 12)
 # of the exported document, and the input to the OCR that re-indexes it: 300 dpi
 # puts an A4 at about 2480 x 3508, print quality, near the scan it came from.
 EXPORT_DPI = env_int("SPYDF_EXPORT_DPI", 300)
+# A page larger than this, in either orientation, is shrunk to fit inside it
+# before rendering, its proportions kept. Some scanners store an A4 scan as a
+# poster-sized page; at EXPORT_DPI that would be twenty times the pixels of the
+# scan itself, all of them interpolated. A page already smaller is left alone.
+EXPORT_MAX_SHORT_MM = env_float("SPYDF_EXPORT_MAX_SHORT_MM", 210.0)
+EXPORT_MAX_LONG_MM = env_float("SPYDF_EXPORT_MAX_LONG_MM", 297.0)
 # JPEG quality of the flattened pages; 95 is near-lossless to the eye, 0 keeps
 # them truly lossless, which multiplies the size of a scan by five or six.
 EXPORT_JPEG_QUALITY = env_int("SPYDF_EXPORT_JPEG_QUALITY", 95)

@@ -193,3 +193,27 @@ def test_spans_applies_the_non_zero_winding_rule():
     rect = [(0, 0), (20, 0), (20, 20), (0, 20)]
     points = [fitz.Point(x, y) for x, y in rect + rect]
     assert _spans(points, 10) == [(0.0, 20.0)]
+
+
+def test_a_poster_sized_page_is_shrunk_to_fit_a4_and_its_zones_follow():
+    # an A4 scan stored at one point per pixel: 84 x 119 cm
+    w, h = 2384, 3371
+    doc = fitz.open()
+    p = doc.new_page(width=w, height=h)
+    p.draw_rect(p.rect, color=None, fill=PAPER)
+    data = doc.tobytes()
+    doc.close()
+
+    zones = {0: [_zone(rect_points((0, 0, w / 2, h / 2)), color=[10, 20, 30])]}
+    out, _ = flatten(data, zones, set())
+
+    exported = fitz.open(stream=out, filetype="pdf")
+    try:
+        rect = exported[0].rect
+        assert rect.width <= 595.3 and rect.height <= 841.9
+        assert abs(rect.width / rect.height - w / h) < 1e-3
+        pm = exported[0].get_pixmap()
+        assert pm.pixel(pm.width // 4, pm.height // 4) == (10, 20, 30)
+        assert pm.pixel(3 * pm.width // 4, 3 * pm.height // 4) != (10, 20, 30)
+    finally:
+        exported.close()

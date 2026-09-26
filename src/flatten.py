@@ -23,9 +23,18 @@ from collections.abc import Callable
 import fitz
 
 from src import ocr
-from src.config import EXPORT_DPI, EXPORT_JPEG_QUALITY, MOSAIC_BLOCKS, OCR_MAX_PAGES
+from src.config import (
+    EXPORT_DPI,
+    EXPORT_JPEG_QUALITY,
+    EXPORT_MAX_LONG_MM,
+    EXPORT_MAX_SHORT_MM,
+    MOSAIC_BLOCKS,
+    OCR_MAX_PAGES,
+)
 
 RGB_MAX = 255
+POINTS_PER_INCH = 72
+MM_PER_INCH = 25.4
 
 
 def _spans(points, y) -> list[tuple[float, float]]:
@@ -151,12 +160,23 @@ def _paint_pixelate(pm, zone, page_rect, mosaic):
             x = stop
 
 
-def _page_image(page, zones):
+def _fit_scale(rect) -> float:
+    """How much a page is shrunk so it fits the export's largest page, never above 1."""
+    short, long = sorted((rect.width, rect.height))
+    if short <= 0:
+        return 1.0
+    pt = POINTS_PER_INCH / MM_PER_INCH
+    return min(1.0, EXPORT_MAX_SHORT_MM * pt / short, EXPORT_MAX_LONG_MM * pt / long)
+
+
+def _page_image(page, zones, scale):
     """Render one page and paint its zones into the bitmap.
 
     Args:
         page: The source page.
         zones: Its parsed zones, or an empty list.
+        scale: The `_fit_scale` of the page: the bitmap is rendered at
+            EXPORT_DPI for the page's size once shrunk by it.
 
     Returns:
         The bitmap, zones included, ready to be written into the export.
@@ -165,7 +185,8 @@ def _page_image(page, zones):
     # pixelate zone overlapping a delete zone must show the original blurred,
     # not the cover that is about to land on it.
     mosaics = [(z, _mosaic(page, z["rect"])) for z in zones if z["mode"] == "pixelate"]
-    pm = page.get_pixmap(dpi=EXPORT_DPI, alpha=False)
+    zoom = EXPORT_DPI / POINTS_PER_INCH * scale
+    pm = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
     for z in zones:
         if z["mode"] == "delete":
             _paint_delete(pm, z, page.rect)
@@ -215,8 +236,9 @@ def flatten(
         for n, page in enumerate(src):
             if n in deleted_pages:
                 continue
-            pm = _page_image(page, zones_by_page.get(n) or [])
-            new_page = out.new_page(width=page.rect.width, height=page.rect.height)
+            scale = _fit_scale(page.rect)
+            pm = _page_image(page, zones_by_page.get(n) or [], scale)
+            new_page = out.new_page(width=page.rect.width * scale, height=page.rect.height * scale)
             _insert(new_page, pm)
             pages += 1
             if engine and indexed >= OCR_MAX_PAGES:

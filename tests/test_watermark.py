@@ -242,8 +242,10 @@ def test_watermark_size_does_not_depend_on_the_page_scale(client):
             hits = page.search_for("COPIE")
             assert hits, "filigrane absent"
             box = hits[0]
-            # the rotated text's diagonal, relative to the page's
-            return math.hypot(box.width, box.height) / math.hypot(width, height)
+            # the rotated text's diagonal, relative to the exported page's: a
+            # page larger than A4 comes out shrunk to fit it
+            rect = page.rect
+            return math.hypot(box.width, box.height) / math.hypot(rect.width, rect.height)
         finally:
             chk.close()
 

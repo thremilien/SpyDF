@@ -97,6 +97,12 @@ allowed a one-line comment instead of a docstring.
 - Rendering and recognition are both CPU-bound and both slow — seconds a page.
   `/api/export` calls `flatten` through `run_in_threadpool`, or one export
   freezes every other session.
+- The recognition runs in a process-wide pool (`ocr.read_async`), one engine
+  per worker thread, each with its share of the cores (`SPYDF_OCR_WORKERS`,
+  0 = auto). Only PNG bytes cross into it: PyMuPDF is not thread-safe, so
+  rendering, `ocr.prepare` and `write_layer` stay on the export's thread, and
+  the text layers are written back in page order. Each worker costs roughly
+  250 MB of RAM for its engine.
 - A delete zone carries a colour (`color: [r, g, b]`, 0-255) and the fill uses
   it. The default is the page's paper colour, read once per page at
   `/api/open` (`src/background.py`) and handed to the client as `pages[i].bg` —

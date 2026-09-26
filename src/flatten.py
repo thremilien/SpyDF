@@ -18,6 +18,7 @@ the OCR only ever sees the bitmap *after* the zones are painted, so the text
 layer cannot describe what a zone hides.
 """
 
+from collections import deque
 from collections.abc import Callable
 
 import fitz
@@ -30,6 +31,7 @@ from src.config import (
     EXPORT_MAX_SHORT_MM,
     MOSAIC_BLOCKS,
     OCR_MAX_PAGES,
+    OCR_QUEUE_PER_WORKER,
 )
 
 RGB_MAX = 255
@@ -232,6 +234,20 @@ def flatten(
     pages = indexed = fragments = 0
     truncated = False
     total = sum(1 for n in range(src.page_count) if n not in deleted_pages)
+    # Pages whose text is still being read, oldest first: (page number in the
+    # export, the future, or None when the page is not indexed).
+    pending: deque = deque()
+    done = 0
+
+    def settle():
+        nonlocal done, fragments
+        pno, future = pending.popleft()
+        if future is not None:
+            fragments += ocr.write_layer(out[pno], future.result())
+        done += 1
+        if progress is not None:
+            progress(done, total)
+
     try:
         for n, page in enumerate(src):
             if n in deleted_pages:
@@ -240,14 +256,22 @@ def flatten(
             pm = _page_image(page, zones_by_page.get(n) or [], scale)
             new_page = out.new_page(width=page.rect.width * scale, height=page.rect.height * scale)
             _insert(new_page, pm)
-            pages += 1
+            future = None
             if engine and indexed >= OCR_MAX_PAGES:
                 truncated = True
             elif engine:
-                fragments += ocr.write_layer(new_page, ocr.bitmap_words(pm))
+                # the readers get the page while the next one is rendered
+                future = ocr.read_async(ocr.prepare(pm))
                 indexed += 1
-            if progress is not None:
-                progress(pages, total)
+            pending.append((pages, future))
+            pages += 1
+            del pm
+            # a few pages ahead keeps every reader busy without holding the
+            # whole document's text in flight
+            while len(pending) > OCR_QUEUE_PER_WORKER * ocr.workers():
+                settle()
+        while pending:
+            settle()
         # A new document carries almost nothing; these two make it nothing.
         out.set_metadata({})
         out.del_xml_metadata()

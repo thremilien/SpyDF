@@ -152,6 +152,14 @@ OCR_MAX_SIDE = env_int("SPYDF_OCR_MAX_SIDE", 2400)
 OCR_MIN_SCORE = env_float("SPYDF_OCR_MIN_SCORE", 0.5)  # below this it is noise, not text
 OCR_MAX_PAGES = env_int("SPYDF_OCR_MAX_PAGES", 100)  # guard rail on a very long document
 OCR_SNIPPET = env_int("SPYDF_OCR_SNIPPET", 200)  # one fragment is a line, never a page
+# Pages read at once, each by its own engine with an equal share of the cores.
+# One engine alone keeps a dozen cores only two-thirds busy; three side by side
+# read a page in about 60% of the time. 0 picks it from the core count: one
+# engine per two cores, three at most, beyond which nothing more is gained.
+OCR_WORKERS = env_int("SPYDF_OCR_WORKERS", 0)
+OCR_AUTO_MAX_WORKERS = 3
+OCR_CORES_PER_WORKER = 2
+OCR_QUEUE_PER_WORKER = 2  # pages queued ahead of each reader during an export
 
 
 # ---------- watermark ----------

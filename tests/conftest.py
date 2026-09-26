@@ -2,6 +2,8 @@
 costs seconds a page and would make the suite unbearable.
 """
 
+import threading
+
 import pytest
 
 import src.ocr as ocr
@@ -14,7 +16,7 @@ _real_get_engine = ocr._get_engine
 def _no_ocr(monkeypatch):
     """Make the engine unavailable, and never let it leak into the next test."""
     monkeypatch.setattr(ocr, "_get_engine", lambda: None)
-    monkeypatch.setattr(ocr, "_engine", None)
+    monkeypatch.setattr(ocr, "_engines", threading.local())
     monkeypatch.setattr(ocr, "_engine_broken", False)
     yield
 
@@ -23,6 +25,6 @@ def _no_ocr(monkeypatch):
 def real_ocr(monkeypatch):
     """Opt-in: restore the real engine for the few tests that must recognise text."""
     monkeypatch.setattr(ocr, "_get_engine", _real_get_engine)
-    monkeypatch.setattr(ocr, "_engine", None)
+    monkeypatch.setattr(ocr, "_engines", threading.local())
     monkeypatch.setattr(ocr, "_engine_broken", False)
     yield

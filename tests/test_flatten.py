@@ -217,3 +217,44 @@ def test_a_poster_sized_page_is_shrunk_to_fit_a4_and_its_zones_follow():
         assert pm.pixel(3 * pm.width // 4, 3 * pm.height // 4) != (10, 20, 30)
     finally:
         exported.close()
+
+
+def test_pages_read_in_parallel_keep_their_own_text(monkeypatch):
+    # each page's paper says which page it is; the first pages are the slowest
+    # to read, so the answers come back out of order
+    import time
+
+    import src.ocr as ocr
+
+    shades = [40, 80, 120, 160, 200, 240]
+    doc = fitz.open()
+    for shade in shades:
+        p = doc.new_page(width=200, height=200)
+        p.draw_rect(p.rect, color=None, fill=[shade / 255] * 3)
+        p.draw_rect(fitz.Rect(0, 0, 10, 10), color=None, fill=(1, 0, 0))
+    data = doc.tobytes()
+    doc.close()
+
+    class Engine:
+        def __call__(self, png):
+            shade = fitz.Pixmap(png).pixel(100, 100)[0]
+            time.sleep((255 - shade) / 2000)
+            box = [[10, 10], [150, 10], [150, 40], [10, 40]]
+            return [(box, f"shade{shade}", 0.99)], None
+
+    engine = Engine()
+    monkeypatch.setattr(ocr, "_get_engine", lambda: engine)
+    monkeypatch.setattr(ocr, "_pool", None)
+    monkeypatch.setattr("src.config.OCR_WORKERS", 3)
+    monkeypatch.setattr(ocr, "OCR_WORKERS", 3)
+    seen = []
+    out, report = flatten(data, {}, set(), progress=lambda d, t: seen.append(d))
+
+    exported = fitz.open(stream=out, filetype="pdf")
+    try:
+        assert report["indexed"] == len(shades)
+        for page, shade in zip(exported, shades, strict=True):
+            assert page.get_text().split() == [f"shade{shade}"]
+        assert seen == list(range(1, len(shades) + 1))
+    finally:
+        exported.close()

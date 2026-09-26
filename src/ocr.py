@@ -17,34 +17,64 @@ export goes out as an image, which the report says.
 """
 
 import logging
+import os
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 
 import fitz
 
-from src.config import OCR_MAX_SIDE, OCR_MIN_SCORE, OCR_SNIPPET
+from src.config import (
+    OCR_AUTO_MAX_WORKERS,
+    OCR_CORES_PER_WORKER,
+    OCR_MAX_SIDE,
+    OCR_MIN_SCORE,
+    OCR_SNIPPET,
+    OCR_WORKERS,
+)
 from src.logs import log_event
 
-_engine = None  # built on first use: loading the models costs a second
+# One engine per thread, built on its first use: loading the models costs a
+# second, and an ONNX session is not something two pages should share.
+_engines = threading.local()
 _engine_broken = False
+_pool: ThreadPoolExecutor | None = None
+_pool_lock = threading.Lock()
 
 MIN_SIDE = 32  # a bitmap smaller than this carries no readable text
 MIN_FONTSIZE = 1.0  # below this the fragment is not worth a text object
 
 
+def _cores() -> int:
+    """The cores this process may run on — a container's share, not the host's."""
+    count = getattr(os, "process_cpu_count", os.cpu_count)()
+    return max(1, count or 1)
+
+
+def workers() -> int:
+    """How many pages are read at once."""
+    if OCR_WORKERS > 0:
+        return OCR_WORKERS
+    return max(1, min(OCR_AUTO_MAX_WORKERS, _cores() // OCR_CORES_PER_WORKER))
+
+
 def _get_engine():
-    """The OCR engine, or None if it cannot be used.
+    """The calling thread's OCR engine, or None if it cannot be used.
 
     Returns:
         The engine instance, or None when the package is missing or its models
         fail to load. Failure is remembered, so a broken install costs one
         attempt and not one per page.
     """
-    global _engine, _engine_broken
-    if _engine is not None or _engine_broken:
-        return _engine
+    global _engine_broken
+    engine = getattr(_engines, "engine", None)
+    if engine is not None or _engine_broken:
+        return engine
     try:
         from rapidocr_onnxruntime import RapidOCR
 
-        _engine = RapidOCR()
+        # the engines run side by side, so each gets its share of the cores
+        threads = max(1, _cores() // workers())
+        engine = _engines.engine = RapidOCR(intra_op_num_threads=threads)
     except Exception as e:
         _engine_broken = True
         # The export degrades to a plain image and says so, but only here can it
@@ -52,7 +82,7 @@ def _get_engine():
         # with no text layer and has nothing to go on. It names the exception,
         # never a document — the engine is loaded before any file is read.
         log_event("ocr_unavailable", level=logging.WARNING, error=f"{type(e).__name__}: {e}")
-    return _engine
+    return engine
 
 
 def available() -> bool:
@@ -95,11 +125,27 @@ def _readable(pm):
     return None if _flat(pm) else pm
 
 
-def bitmap_words(pm) -> list[dict]:
-    """Read one page bitmap.
+def prepare(pm) -> tuple[bytes, int, int] | None:
+    """The part of reading a page that touches the bitmap, done by the caller.
+
+    PyMuPDF is not safe across threads, so the shrink and the PNG encoding stay
+    on the thread that rendered the page; only what `read` gets crosses over.
 
     Args:
         pm: The bitmap of the page, zones already painted into it.
+
+    Returns:
+        (the PNG bytes, their width, their height), or None when there is
+        nothing to read.
+    """
+    small = _readable(pm)
+    if small is None:
+        return None
+    return small.tobytes("png"), small.width, small.height
+
+
+def read(prepared: tuple[bytes, int, int] | None) -> list[dict]:
+    """Recognise one page prepared by `prepare`; safe to run on any thread.
 
     Returns:
         One entry per recognised fragment: {"text", "score", "rect"}, the
@@ -107,21 +153,19 @@ def bitmap_words(pm) -> list[dict]:
         placed on a page of any size.
     """
     engine = _get_engine()
-    if engine is None:
+    if engine is None or prepared is None:
         return []
-    small = _readable(pm)
-    if small is None:
-        return []
+    png, width, height = prepared
     try:
-        result, _ = engine(small.tobytes("png"))
+        result, _ = engine(png)
     except Exception:
         return []
     out = []
     for box, text, score in result or []:
         if not text.strip() or score < OCR_MIN_SCORE:
             continue
-        xs = [p[0] / small.width for p in box]
-        ys = [p[1] / small.height for p in box]
+        xs = [p[0] / width for p in box]
+        ys = [p[1] / height for p in box]
         out.append(
             {
                 "text": text.strip()[:OCR_SNIPPET],
@@ -135,6 +179,29 @@ def bitmap_words(pm) -> list[dict]:
             }
         )
     return out
+
+
+def bitmap_words(pm) -> list[dict]:
+    """Read one page bitmap, on the calling thread."""
+    if _get_engine() is None:
+        return []
+    return read(prepare(pm))
+
+
+def read_async(prepared: tuple[bytes, int, int] | None) -> Future:
+    """Hand a prepared page to the shared pool of readers.
+
+    The pool is one for the whole process, so two exports running together
+    share its engines rather than each starting its own set.
+
+    Returns:
+        A future holding what `read` returns.
+    """
+    global _pool
+    with _pool_lock:
+        if _pool is None:
+            _pool = ThreadPoolExecutor(workers(), thread_name_prefix="ocr")
+    return _pool.submit(read, prepared)
 
 
 def _fits(text: str) -> bool:

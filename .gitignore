@@ -84,3 +84,5 @@ Thumbs.db
 
 # Sphinx documentation
 docs/_build/
+
+graphify-out/
